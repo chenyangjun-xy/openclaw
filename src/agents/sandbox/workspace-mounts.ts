@@ -76,7 +76,8 @@ export function resolveReadOnlyWorkspaceSkillMounts(params: {
   // RW workspaces mount the project as writable, but skill sources remain read-only so agent
   // instructions are visible without letting sandbox commands mutate them.
   const materializedSkillsWorkspaceDir =
-    params.skillsWorkspaceDir ?? resolveMaterializedSandboxSkillsWorkspaceDir(params.agentWorkspaceDir);
+    params.skillsWorkspaceDir ??
+    resolveMaterializedSandboxSkillsWorkspaceDir(params.agentWorkspaceDir);
   const mounts = [
     {
       hostPath: path.join(params.agentWorkspaceDir, "skills"),
@@ -132,7 +133,9 @@ export function filterReadOnlyWorkspaceSkillMountsByBinds(
   for (const bind of binds) {
     const spec = splitSandboxBindSpec(bind);
     if (spec) {
-      bindTargets.add(normalizeContainerPath(spec.container));
+      // Strip trailing slashes so /workspace/skills/ matches /workspace/skills from containerJoin.
+      const containerPath = normalizeContainerPath(spec.container).replace(/\/+$/, "") || "/";
+      bindTargets.add(containerPath);
     }
   }
   return bindTargets.size > 0
