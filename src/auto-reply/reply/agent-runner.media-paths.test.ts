@@ -736,7 +736,7 @@ describe("runReplyAgent media path normalization", () => {
     expect(call?.imageOrder).toBeUndefined();
   });
 
-  it("falls back to prompt refs instead of forwarding partial current media", async () => {
+  it("forwards successfully resolved current media when a subset cannot be read", async () => {
     const tmpDir = await mkdtemp(path.join(os.tmpdir(), "openclaw-native-agent-partial-"));
     cleanupPaths.push(tmpDir);
     const imagePath = path.join(tmpDir, "present.png");
@@ -780,7 +780,9 @@ describe("runReplyAgent media path normalization", () => {
           imageOrder?: string[];
         }
       | undefined;
-    expect(call?.images).toBeUndefined();
-    expect(call?.imageOrder).toBeUndefined();
+    expect(call?.images).toHaveLength(1);
+    expect(call?.images?.[0]?.type).toBe("image");
+    expect(call?.images?.[0]?.mimeType).toBe("image/png");
+    expect(call?.imageOrder).toEqual(["inline"]);
   });
 });

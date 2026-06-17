@@ -130,10 +130,11 @@ export async function resolveCurrentTurnImages(params: {
     );
     if (images.length < undescribedImageAttachments.length) {
       logVerbose(
-        `agent-runner: native OpenClaw media resolution produced ${images.length}/${undescribedImageAttachments.length} current image attachment(s); falling back to prompt image refs`,
+        `agent-runner: native OpenClaw media resolution produced ${images.length}/${undescribedImageAttachments.length} current image attachment(s)`,
       );
-      return { images: params.images, imageOrder: params.imageOrder };
     }
+    // Return successfully resolved images even when some fail, so channel-delivered
+    // images (e.g. Telegram) are not silently dropped when a subset cannot be read.
     return images.length > 0
       ? { images, imageOrder: images.map(() => "inline" as const) }
       : { images: params.images, imageOrder: params.imageOrder };
