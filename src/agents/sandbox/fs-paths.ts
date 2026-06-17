@@ -18,7 +18,10 @@ import {
   normalizeContainerPath,
   relativePathEscapesContainerRoot,
 } from "./path-utils.js";
-import { resolveReadOnlyWorkspaceSkillMounts } from "./workspace-mounts.js";
+import {
+  filterReadOnlyWorkspaceSkillMountsByBinds,
+  resolveReadOnlyWorkspaceSkillMounts,
+} from "./workspace-mounts.js";
 
 export type SandboxFsMount = {
   hostRoot: string;
@@ -88,13 +91,16 @@ export function buildSandboxFsMounts(sandbox: SandboxFsBridgeContext): SandboxFs
     });
   }
 
-  for (const mount of resolveReadOnlyWorkspaceSkillMounts({
-    workspaceDir: sandbox.workspaceDir,
-    agentWorkspaceDir: sandbox.agentWorkspaceDir,
-    skillsWorkspaceDir: sandbox.skillsWorkspaceDir,
-    workdir: sandbox.containerWorkdir,
-    workspaceAccess: sandbox.workspaceAccess,
-  })) {
+  for (const mount of filterReadOnlyWorkspaceSkillMountsByBinds(
+    resolveReadOnlyWorkspaceSkillMounts({
+      workspaceDir: sandbox.workspaceDir,
+      agentWorkspaceDir: sandbox.agentWorkspaceDir,
+      skillsWorkspaceDir: sandbox.skillsWorkspaceDir,
+      workdir: sandbox.containerWorkdir,
+      workspaceAccess: sandbox.workspaceAccess,
+    }),
+    sandbox.docker.binds,
+  )) {
     mounts.push({
       hostRoot: path.resolve(mount.hostPath),
       containerRoot: normalizeContainerPath(mount.containerPath),

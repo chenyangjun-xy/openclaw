@@ -58,6 +58,7 @@ import { validateNetworkMode } from "./validate-sandbox-security.js";
 import {
   appendReadOnlyWorkspaceSkillMountArgs,
   appendWorkspaceMountArgs,
+  filterReadOnlyWorkspaceSkillMountsByBinds,
   formatReadOnlyWorkspaceSkillMountHashState,
   resolveReadOnlyWorkspaceSkillMounts,
   SANDBOX_MOUNT_FORMAT_VERSION,
@@ -241,13 +242,16 @@ export async function ensureSandboxBrowser(params: {
     docker: params.cfg.docker,
     browser: { ...params.cfg.browser, image: browserImage },
   });
-  const readOnlyWorkspaceSkillMounts = resolveReadOnlyWorkspaceSkillMounts({
-    workspaceDir: params.workspaceDir,
-    agentWorkspaceDir: params.agentWorkspaceDir,
-    skillsWorkspaceDir: params.skillsWorkspaceDir,
-    workdir: params.cfg.docker.workdir,
-    workspaceAccess: params.cfg.workspaceAccess,
-  });
+  const readOnlyWorkspaceSkillMounts = filterReadOnlyWorkspaceSkillMountsByBinds(
+    resolveReadOnlyWorkspaceSkillMounts({
+      workspaceDir: params.workspaceDir,
+      agentWorkspaceDir: params.agentWorkspaceDir,
+      skillsWorkspaceDir: params.skillsWorkspaceDir,
+      workdir: params.cfg.docker.workdir,
+      workspaceAccess: params.cfg.workspaceAccess,
+    }),
+    browserDockerCfg.binds,
+  );
   const expectedHash = computeSandboxBrowserConfigHash({
     docker: browserDockerCfg,
     dockerEnvPolicyEpoch: resolveDockerEnvPolicyEpoch(browserDockerCfg.env),

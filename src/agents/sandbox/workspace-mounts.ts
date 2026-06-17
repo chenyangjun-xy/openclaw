@@ -6,8 +6,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isPathInside } from "../../infra/path-guards.js";
+import { splitSandboxBindSpec } from "./bind-spec.js";
 import { SANDBOX_AGENT_WORKSPACE_MOUNT } from "./constants.js";
 import { resolveSandboxHostPathViaExistingAncestor } from "./host-paths.js";
+import { normalizeContainerPath } from "./path-utils.js";
 import type { SandboxWorkspaceAccess } from "./types.js";
 
 export const SANDBOX_MOUNT_FORMAT_VERSION = 3;
@@ -112,6 +114,30 @@ export function formatReadOnlyWorkspaceSkillMountHashState(
   mounts: readonly ReadOnlyWorkspaceSkillMount[],
 ): string[] {
   return mounts.map((mount) => `${mount.hostPath}:${mount.containerPath}:ro`);
+}
+
+/**
+ * Filters out read-only skill mounts whose container path is already targeted by a user-defined
+ * bind so the Docker daemon does not reject the container creation with a "Duplicate mount point"
+ * error.
+ */
+export function filterReadOnlyWorkspaceSkillMountsByBinds(
+  mounts: readonly ReadOnlyWorkspaceSkillMount[],
+  binds: readonly string[] | undefined,
+): readonly ReadOnlyWorkspaceSkillMount[] {
+  if (!binds?.length) {
+    return mounts;
+  }
+  const bindTargets = new Set<string>();
+  for (const bind of binds) {
+    const spec = splitSandboxBindSpec(bind);
+    if (spec) {
+      bindTargets.add(normalizeContainerPath(spec.container));
+    }
+  }
+  return bindTargets.size > 0
+    ? mounts.filter((mount) => !bindTargets.has(mount.containerPath))
+    : mounts;
 }
 
 /** Appends Docker `-v` args for read-only skill mounts. */

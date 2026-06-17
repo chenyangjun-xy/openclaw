@@ -185,6 +185,7 @@ import { validateSandboxSecurity } from "./validate-sandbox-security.js";
 import {
   appendReadOnlyWorkspaceSkillMountArgs,
   appendWorkspaceMountArgs,
+  filterReadOnlyWorkspaceSkillMountsByBinds,
   formatReadOnlyWorkspaceSkillMountHashState,
   resolveReadOnlyWorkspaceSkillMounts,
   SANDBOX_MOUNT_FORMAT_VERSION,
@@ -632,13 +633,16 @@ export async function ensureSandboxContainer(params: {
   const slug = params.cfg.scope === "shared" ? "shared" : slugifySessionKey(scopeKey);
   const name = `${params.cfg.docker.containerPrefix}${slug}`;
   const containerName = name.slice(0, 63);
-  const readOnlyWorkspaceSkillMounts = resolveReadOnlyWorkspaceSkillMounts({
-    workspaceDir: params.workspaceDir,
-    agentWorkspaceDir: params.agentWorkspaceDir,
-    skillsWorkspaceDir: params.skillsWorkspaceDir,
-    workdir: params.cfg.docker.workdir,
-    workspaceAccess: params.cfg.workspaceAccess,
-  });
+  const readOnlyWorkspaceSkillMounts = filterReadOnlyWorkspaceSkillMountsByBinds(
+    resolveReadOnlyWorkspaceSkillMounts({
+      workspaceDir: params.workspaceDir,
+      agentWorkspaceDir: params.agentWorkspaceDir,
+      skillsWorkspaceDir: params.skillsWorkspaceDir,
+      workdir: params.cfg.docker.workdir,
+      workspaceAccess: params.cfg.workspaceAccess,
+    }),
+    params.cfg.docker.binds,
+  );
   const expectedHash = computeSandboxConfigHash({
     docker: params.cfg.docker,
     dockerEnvPolicyEpoch: resolveDockerEnvPolicyEpoch(params.cfg.docker.env),
