@@ -1540,39 +1540,84 @@ export async function runEmbeddedAttempt(
       disableTools: params.disableTools || isRawModelRun,
       toolsAllow: params.toolsAllow,
     });
-    const bundleMcpSessionRuntime = bundleMcpEnabled
-      ? await getOrCreateSessionMcpRuntime({
-          sessionId: params.sessionId,
-          sessionKey: params.sessionKey,
-          workspaceDir: effectiveWorkspace,
-          cfg: params.config,
-        })
-      : undefined;
-    bundleMcpRuntime = bundleMcpSessionRuntime
-      ? await materializeBundleMcpToolsForRun({
-          runtime: bundleMcpSessionRuntime,
-          reservedToolNames: [
-            ...tools.map((tool) => tool.name),
-            ...(clientTools?.map((tool) => tool.function.name) ?? []),
-          ],
-        })
-      : undefined;
     const bundleLspEnabled = shouldCreateBundleLspRuntimeForAttempt({
       toolsEnabled,
       disableTools: params.disableTools || isRawModelRun,
       toolsAllow: params.toolsAllow,
     });
-    bundleLspRuntime = bundleLspEnabled
-      ? await createBundleLspToolRuntime({
+
+    // MCP and LSP runtime initialization run in parallel to reduce cold-start
+    // latency. Each server connection is also parallelized internally.
+    const baseReservedToolNames = [
+      ...tools.map((tool) => tool.name),
+      ...(clientTools?.map((tool) => tool.function.name) ?? []),
+    ];
+    const mcpInitTask = bundleMcpEnabled
+      ? (async () => {
+          const runtime = await getOrCreateSessionMcpRuntime({
+            sessionId: params.sessionId,
+            sessionKey: params.sessionKey,
+            workspaceDir: effectiveWorkspace,
+            cfg: params.config,
+          });
+          return await materializeBundleMcpToolsForRun({
+            runtime,
+            reservedToolNames: baseReservedToolNames,
+          });
+        })()
+      : undefined;
+    const lspInitTask = bundleLspEnabled
+      ? createBundleLspToolRuntime({
           workspaceDir: effectiveWorkspace,
           cfg: params.config,
-          reservedToolNames: [
-            ...tools.map((tool) => tool.name),
-            ...(clientTools?.map((tool) => tool.function.name) ?? []),
-            ...(bundleMcpRuntime?.tools.map((tool) => tool.name) ?? []),
-          ],
+          // LSP reserved names use the base set (core + client tools) when
+          // initialized in parallel with MCP because MCP tool names are not
+          // known yet. MCP tools use a `mcp__<server>__<tool>` prefix and LSP
+          // tools use `lsp_<method>_<server>`, so collisions are extremely
+          // unlikely. A collision is harmless: the affected tool is skipped
+          // with a warning log.
+          reservedToolNames: baseReservedToolNames,
         })
       : undefined;
+
+    // MCP and LSP initialization run in parallel. Each task catches its own
+    // errors so one failure doesn't block the other.
+    const [mcpResult, lspResult] = await Promise.all([
+      mcpInitTask?.catch((err) => {
+        log.warn(`bundle-mcp: initialization failed: ${String(err)}`);
+        return undefined;
+      }) ?? Promise.resolve(undefined),
+      lspInitTask?.catch((err) => {
+        log.warn(`bundle-lsp: initialization failed: ${String(err)}`);
+        return undefined;
+      }) ?? Promise.resolve(undefined),
+    ]);
+    bundleMcpRuntime = mcpResult;
+    bundleLspRuntime = lspResult;
+
+    // When MCP and LSP initialize in parallel, LSP construction does not see
+    // materialized MCP tool names. Deduplicate post-hoc so an LSP tool whose
+    // name collides with an MCP tool is skipped, preserving the pre-parallel
+    // behavior where MCP tool names take priority.
+    if (bundleMcpRuntime && bundleLspRuntime) {
+      const mcpLowerNames = new Set(
+        bundleMcpRuntime.tools.map((t) => t.name.toLowerCase()).filter(Boolean),
+      );
+      const dedupedLspTools = bundleLspRuntime.tools.filter((tool) => {
+        const lower = tool.name.toLowerCase();
+        if (!lower || !mcpLowerNames.has(lower)) {
+          return true;
+        }
+        log.warn(
+          `bundle-lsp: skipped tool "${tool.name}" after parallel MCP+LSP init because an MCP tool already uses that name.`,
+        );
+        return false;
+      });
+      if (dedupedLspTools.length !== bundleLspRuntime.tools.length) {
+        bundleLspRuntime = { ...bundleLspRuntime, tools: dedupedLspTools };
+      }
+    }
+
     const allowedBundleMcpTools = applyEmbeddedAttemptToolsAllow(
       bundleMcpRuntime?.tools ?? [],
       effectiveToolsAllow,

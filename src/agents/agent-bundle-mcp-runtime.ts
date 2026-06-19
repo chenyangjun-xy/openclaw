@@ -561,154 +561,201 @@ export function createSessionMcpRuntime(params: {
         };
       }
 
-      const servers: Record<string, McpServerCatalog> = {};
-      const tools: McpCatalogTool[] = [];
       const diagnostics: McpToolCatalogDiagnostic[] = [];
       const usedServerNames = new Set<string>();
 
-      try {
-        for (const [serverName, rawServer] of Object.entries(loaded.mcpServers)) {
-          failIfDisposed();
-          const resolved = resolveMcpTransport(serverName, rawServer);
-          if (!resolved) {
-            continue;
-          }
-          const safeServerName = sanitizeServerName(serverName, usedServerNames);
-          if (safeServerName !== serverName) {
-            logWarn(
-              `bundle-mcp: server key "${serverName}" registered as "${safeServerName}" for provider-safe tool names.`,
-            );
-          }
+      // Phase 1: Resolve all server configs and pre-compute safe names synchronously
+      // so that parallel connection attempts don't race on name deduplication.
+      type ServerPlan = {
+        serverName: string;
+        rawServer: unknown;
+        resolved: NonNullable<ReturnType<typeof resolveMcpTransport>>;
+        safeServerName: string;
+      };
+      const serverPlans: ServerPlan[] = [];
+      for (const [serverName, rawServer] of Object.entries(loaded.mcpServers)) {
+        failIfDisposed();
+        const resolved = resolveMcpTransport(serverName, rawServer);
+        if (!resolved) {
+          continue;
+        }
+        const safeServerName = sanitizeServerName(serverName, usedServerNames);
+        if (safeServerName !== serverName) {
+          logWarn(
+            `bundle-mcp: server key "${serverName}" registered as "${safeServerName}" for provider-safe tool names.`,
+          );
+        }
+        serverPlans.push({ serverName, rawServer, resolved, safeServerName });
+      }
 
-          let session = sessions.get(serverName);
-          const reusedSession = Boolean(session);
-          let connected = Boolean(session);
-          if (!session) {
-            const client = new Client(
-              {
-                name: "openclaw-bundle-mcp",
-                version: "0.0.0",
-              },
-              {
-                jsonSchemaValidator: createBundleMcpJsonSchemaValidator(),
-                listChanged: {
-                  tools: {
-                    autoRefresh: false,
-                    debounceMs: 0,
-                    onChanged: (error) => {
-                      if (error) {
-                        logWarn(
-                          `bundle-mcp: failed to refresh changed tool list for server "${serverName}": ${redactErrorUrls(error)}`,
-                        );
-                      }
-                      catalogInvalidationGeneration += 1;
-                      catalog = null;
-                      catalogInFlight = undefined;
+      try {
+        // Phase 2: Connect to all servers and list their tools in parallel.
+        // Each server gets its own independent async task; the slowest server
+        // determines total wall-clock time instead of the sum of all servers.
+        const serverResults = await Promise.all(
+          serverPlans.map(
+            async ({
+              serverName,
+              rawServer,
+              resolved,
+              safeServerName,
+            }): Promise<
+              | {
+                  ok: true;
+                  serverName: string;
+                  entry: McpServerCatalog;
+                  tools: McpCatalogTool[];
+                }
+              | { ok: false; diagnostic: McpToolCatalogDiagnostic }
+            > => {
+              let session = sessions.get(serverName);
+              const reusedSession = Boolean(session);
+              let connected = Boolean(session);
+              if (!session) {
+                const client = new Client(
+                  {
+                    name: "openclaw-bundle-mcp",
+                    version: "0.0.0",
+                  },
+                  {
+                    jsonSchemaValidator: createBundleMcpJsonSchemaValidator(),
+                    listChanged: {
+                      tools: {
+                        autoRefresh: false,
+                        debounceMs: 0,
+                        onChanged: (error) => {
+                          if (error) {
+                            logWarn(
+                              `bundle-mcp: failed to refresh changed tool list for server "${serverName}": ${redactErrorUrls(error)}`,
+                            );
+                          }
+                          catalogInvalidationGeneration += 1;
+                          catalog = null;
+                          catalogInFlight = undefined;
+                        },
+                      },
                     },
                   },
-                },
-              },
-            );
-            session = {
-              serverName,
-              client,
-              transport: resolved.transport,
-              transportType: resolved.transportType,
-              requestTimeoutMs: resolved.requestTimeoutMs,
-              supportsParallelToolCalls: resolved.supportsParallelToolCalls,
-              detachStderr: resolved.detachStderr,
-            };
-            sessions.set(serverName, session);
-          }
-
-          try {
-            failIfDisposed();
-            if (!connected) {
-              await connectWithTimeout(
-                session.client,
-                session.transport,
-                resolved.connectionTimeoutMs,
-              );
-              connected = true;
-            }
-            failIfDisposed();
-            const capabilities = summarizeServerCapabilities(
-              session.client.getServerCapabilities(),
-            );
-            const listedTools = await listAllToolsBestEffort({
-              client: session.client,
-              timeoutMs: getCatalogListTimeoutMs(rawServer, resolved.requestTimeoutMs),
-              suppressUnsupported: Boolean(
-                !capabilities.tools && (capabilities.resources || capabilities.prompts),
-              ),
-            });
-            failIfDisposed();
-            const selection = getMcpToolSelection(rawServer);
-            const exposedTools = listedTools.filter((tool) =>
-              shouldExposeMcpTool(selection, tool.name.trim()),
-            );
-            servers[serverName] = {
-              serverName,
-              safeServerName,
-              launchSummary: resolved.description,
-              toolCount: exposedTools.length,
-              requestTimeoutMs: resolved.requestTimeoutMs,
-              supportsParallelToolCalls: resolved.supportsParallelToolCalls,
-              ...(capabilities.resources ? { resources: capabilities.resources } : {}),
-              ...(capabilities.prompts ? { prompts: capabilities.prompts } : {}),
-              ...(capabilities.tools
-                ? {
-                    tools: {
-                      ...capabilities.tools,
-                      ...(exposedTools.length !== listedTools.length
-                        ? { filteredCount: listedTools.length - exposedTools.length }
-                        : {}),
-                    },
-                  }
-                : {}),
-              ...(selection.include || selection.exclude
-                ? {
-                    toolFilter: {
-                      ...(selection.include ? { include: [...selection.include] } : {}),
-                      ...(selection.exclude ? { exclude: [...selection.exclude] } : {}),
-                    },
-                  }
-                : {}),
-            };
-            for (const tool of exposedTools) {
-              const toolName = tool.name.trim();
-              if (!toolName) {
-                continue;
+                );
+                session = {
+                  serverName,
+                  client,
+                  transport: resolved.transport,
+                  transportType: resolved.transportType,
+                  requestTimeoutMs: resolved.requestTimeoutMs,
+                  supportsParallelToolCalls: resolved.supportsParallelToolCalls,
+                  detachStderr: resolved.detachStderr,
+                };
+                sessions.set(serverName, session);
               }
-              tools.push({
-                serverName,
-                safeServerName,
-                toolName,
-                title: tool.title,
-                description: sanitizeMcpMetadataText(tool.description),
-                inputSchema: tool.inputSchema,
-                fallbackDescription: `Provided by bundle MCP server "${serverName}" (${resolved.description}).`,
-              });
-            }
-          } catch (error) {
-            const message = redactErrorUrls(error);
-            if (!disposed) {
-              const action = reusedSession ? "refresh" : "start";
-              logWarn(
-                `bundle-mcp: failed to ${action} server "${serverName}" (${resolved.description}): ${message}`,
-              );
-            }
-            diagnostics.push({
-              serverName,
-              safeServerName,
-              launchSummary: resolved.description,
-              message,
-            });
-            if (!reusedSession) {
-              await disposeSession(session);
-              sessions.delete(serverName);
-            }
-            failIfDisposed();
+
+              try {
+                failIfDisposed();
+                if (!connected) {
+                  await connectWithTimeout(
+                    session.client,
+                    session.transport,
+                    resolved.connectionTimeoutMs,
+                  );
+                  connected = true;
+                }
+                failIfDisposed();
+                const capabilities = summarizeServerCapabilities(
+                  session.client.getServerCapabilities(),
+                );
+                const listedTools = await listAllToolsBestEffort({
+                  client: session.client,
+                  timeoutMs: getCatalogListTimeoutMs(rawServer, resolved.requestTimeoutMs),
+                  suppressUnsupported: Boolean(
+                    !capabilities.tools && (capabilities.resources || capabilities.prompts),
+                  ),
+                });
+                failIfDisposed();
+                const selection = getMcpToolSelection(rawServer);
+                const exposedTools = listedTools.filter((tool) =>
+                  shouldExposeMcpTool(selection, tool.name.trim()),
+                );
+                const entry: McpServerCatalog = {
+                  serverName,
+                  safeServerName,
+                  launchSummary: resolved.description,
+                  toolCount: exposedTools.length,
+                  requestTimeoutMs: resolved.requestTimeoutMs,
+                  supportsParallelToolCalls: resolved.supportsParallelToolCalls,
+                  ...(capabilities.resources ? { resources: capabilities.resources } : {}),
+                  ...(capabilities.prompts ? { prompts: capabilities.prompts } : {}),
+                  ...(capabilities.tools
+                    ? {
+                        tools: {
+                          ...capabilities.tools,
+                          ...(exposedTools.length !== listedTools.length
+                            ? { filteredCount: listedTools.length - exposedTools.length }
+                            : {}),
+                        },
+                      }
+                    : {}),
+                  ...(selection.include || selection.exclude
+                    ? {
+                        toolFilter: {
+                          ...(selection.include ? { include: [...selection.include] } : {}),
+                          ...(selection.exclude ? { exclude: [...selection.exclude] } : {}),
+                        },
+                      }
+                    : {}),
+                };
+                const serverTools: McpCatalogTool[] = [];
+                for (const tool of exposedTools) {
+                  const toolName = tool.name.trim();
+                  if (!toolName) {
+                    continue;
+                  }
+                  serverTools.push({
+                    serverName,
+                    safeServerName,
+                    toolName,
+                    title: tool.title,
+                    description: sanitizeMcpMetadataText(tool.description),
+                    inputSchema: tool.inputSchema,
+                    fallbackDescription: `Provided by bundle MCP server "${serverName}" (${resolved.description}).`,
+                  });
+                }
+                return { ok: true, serverName, entry, tools: serverTools };
+              } catch (error) {
+                const message = redactErrorUrls(error);
+                if (!disposed) {
+                  const action = reusedSession ? "refresh" : "start";
+                  logWarn(
+                    `bundle-mcp: failed to ${action} server "${serverName}" (${resolved.description}): ${message}`,
+                  );
+                }
+                if (!reusedSession) {
+                  await disposeSession(session);
+                  sessions.delete(serverName);
+                }
+                failIfDisposed();
+                return {
+                  ok: false,
+                  diagnostic: {
+                    serverName,
+                    safeServerName,
+                    launchSummary: resolved.description,
+                    message,
+                  },
+                };
+              }
+            },
+          ),
+        );
+
+        // Phase 3: Assemble results from all parallel tasks.
+        const servers: Record<string, McpServerCatalog> = {};
+        const tools: McpCatalogTool[] = [];
+        for (const result of serverResults) {
+          if (result.ok) {
+            servers[result.serverName] = result.entry;
+            tools.push(...result.tools);
+          } else {
+            diagnostics.push(result.diagnostic);
           }
         }
 

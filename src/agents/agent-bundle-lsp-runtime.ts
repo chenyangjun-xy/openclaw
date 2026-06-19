@@ -420,75 +420,100 @@ export async function createBundleLspToolRuntime(params: {
       normalizeOptionalLowercaseString(name),
     ).filter(Boolean),
   );
-  const sessions: LspSession[] = [];
-  const tools: AnyAgentTool[] = [];
 
-  try {
-    for (const [serverName, rawServer] of Object.entries(loaded.lspServers)) {
-      const launch = resolveStdioMcpServerLaunchConfig(rawServer);
-      if (!launch.ok) {
-        logWarn(`bundle-lsp: skipped server "${serverName}" because ${launch.reason}.`);
-        continue;
-      }
-      const launchConfig = launch.config;
-      let session: LspSession | undefined;
+  // Phase 1: Validate all server configs synchronously before spawning.
+  type LspServerPlan = {
+    serverName: string;
+    launchConfig: StdioMcpServerLaunchConfig;
+  };
+  const serverPlans: LspServerPlan[] = [];
+  for (const [serverName, rawServer] of Object.entries(loaded.lspServers)) {
+    const launch = resolveStdioMcpServerLaunchConfig(rawServer);
+    if (!launch.ok) {
+      logWarn(`bundle-lsp: skipped server "${serverName}" because ${launch.reason}.`);
+      continue;
+    }
+    serverPlans.push({ serverName, launchConfig: launch.config });
+  }
+
+  // Phase 2: Spawn and initialize all LSP servers in parallel.
+  type LspServerInitResult = {
+    serverName: string;
+    launchDescription: string;
+    session: LspSession;
+    tools: AnyAgentTool[];
+  };
+  const serverResults = await Promise.allSettled(
+    serverPlans.map(async ({ serverName, launchConfig }): Promise<LspServerInitResult> => {
+      const session = createLspSession(serverName, spawnLspServerProcess(launchConfig));
+      registerActiveLspSession(session);
+      attachLspProcessHandlers(session);
 
       try {
-        session = createLspSession(serverName, spawnLspServerProcess(launchConfig));
-        registerActiveLspSession(session);
-        attachLspProcessHandlers(session);
-
         const capabilities = await initializeSession(session);
         session.capabilities = capabilities;
-        sessions.push(session);
-
-        const serverTools = buildLspTools(session);
-        for (const tool of serverTools) {
-          const normalizedName = normalizeOptionalLowercaseString(tool.name);
-          if (!normalizedName) {
-            continue;
-          }
-          if (reservedNames.has(normalizedName)) {
-            logWarn(
-              `bundle-lsp: skipped tool "${tool.name}" from server "${serverName}" because the name already exists.`,
-            );
-            continue;
-          }
-          reservedNames.add(normalizedName);
-          setPluginToolMeta(tool, {
-            pluginId: "bundle-lsp",
-            optional: false,
-          });
-          tools.push(tool);
-        }
-
-        logDebug(
-          `bundle-lsp: started "${serverName}" (${describeStdioMcpServerLaunchConfig(launchConfig)}) with ${serverTools.length} tools`,
-        );
       } catch (error) {
-        if (session) {
-          await disposeSession(session);
-        }
-        logWarn(
-          `bundle-lsp: failed to start server "${serverName}" (${describeStdioMcpServerLaunchConfig(launchConfig)}): ${String(error)}`,
-        );
+        await disposeSession(session);
+        throw error;
       }
+
+      const serverTools = buildLspTools(session);
+      return {
+        serverName,
+        launchDescription: describeStdioMcpServerLaunchConfig(launchConfig),
+        session,
+        tools: serverTools,
+      };
+    }),
+  );
+
+  // Phase 3: Assemble results, deduplicate tool names.
+  const sessions: LspSession[] = [];
+  const tools: AnyAgentTool[] = [];
+  for (const result of serverResults) {
+    if (result.status === "rejected") {
+      logWarn(`bundle-lsp: failed to start a server: ${String(result.reason)}`);
+      continue;
+    }
+    const { serverName, launchDescription, session, tools: serverTools } = result.value;
+    sessions.push(session);
+
+    for (const tool of serverTools) {
+      const normalizedName = normalizeOptionalLowercaseString(tool.name);
+      if (!normalizedName) {
+        continue;
+      }
+      if (reservedNames.has(normalizedName)) {
+        logWarn(
+          `bundle-lsp: skipped tool "${tool.name}" from server "${serverName}" because the name already exists.`,
+        );
+        continue;
+      }
+      reservedNames.add(normalizedName);
+      setPluginToolMeta(tool, {
+        pluginId: "bundle-lsp",
+        optional: false,
+      });
+      tools.push(tool);
     }
 
-    return {
-      tools,
-      sessions: sessions.map((s) => ({
-        serverName: s.serverName,
-        capabilities: s.capabilities,
-      })),
-      dispose: async () => {
-        await disposeSessions(sessions);
-      },
-    };
-  } catch (error) {
-    await disposeSessions(sessions);
-    throw error;
+    logDebug(
+      `bundle-lsp: started "${serverName}" (${launchDescription}) with ${serverTools.length} tools`,
+    );
   }
+
+  const cleanup = async () => {
+    await disposeSessions(sessions);
+  };
+
+  return {
+    tools,
+    sessions: sessions.map((s) => ({
+      serverName: s.serverName,
+      capabilities: s.capabilities,
+    })),
+    dispose: cleanup,
+  };
 }
 
 export async function disposeAllBundleLspRuntimes(): Promise<void> {
