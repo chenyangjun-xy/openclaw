@@ -123,6 +123,7 @@ import {
 import {
   GENERIC_EXTERNAL_RUN_FAILURE_TEXT,
   HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT,
+  NON_DELIVERABLE_TERMINAL_TURN_USER_TEXT,
 } from "./agent-runner-failure-copy.js";
 import {
   buildEmbeddedRunExecutionParams,
@@ -3409,6 +3410,28 @@ export async function runAgentTurnWithFallback(params: {
         kind: "final",
         payload: markAgentRunFailureReplyPayload({
           text: "⚠️ Context overflow — this conversation is too large for the model. Use /new to start a fresh session.",
+        }),
+      };
+    }
+  }
+
+  // Surface non_deliverable_terminal_turn as a specific, actionable message
+  // instead of the generic "Something went wrong" fallback. The embedded runner
+  // already auto-retried once inside run.ts; this handles the exhausted case.
+  if (runResult) {
+    const isNonDeliverable = runResult.meta?.error?.kind === "non_deliverable_terminal_turn";
+    const hasAnyPayloadText = runResult.payloads?.some((p) => normalizeOptionalString(p.text));
+    if (isNonDeliverable && !hasAnyPayloadText) {
+      params.replyOperation?.fail("run_failed", new Error("non_deliverable_terminal_turn"));
+      return {
+        kind: "final",
+        payload: markAgentRunFailureReplyPayload({
+          text: resolveExternalRunFailureTextForConversation({
+            text: NON_DELIVERABLE_TERMINAL_TURN_USER_TEXT,
+            sessionCtx: params.sessionCtx,
+            isGenericRunnerFailure: false,
+            cfg: params.followupRun.run.config,
+          }),
         }),
       };
     }
