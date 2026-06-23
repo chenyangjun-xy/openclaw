@@ -338,6 +338,58 @@ const TELEGRAM_RICH_ATTR_HTML_TAG_PATTERNS = new Map([
     /^(?=.*\ssrc="https?:\/\/[^"]+")(?:\s+src="https?:\/\/[^"]+"|\s+title="[^"]*"|\s+tg-spoiler)*\s*\/?\s*$/,
   ],
 ]);
+
+/**
+ * Tags that require {@link https://core.telegram.org/bots/api#sendrichmessage sendRichMessage}
+ * because they are NOT supported by {@link https://core.telegram.org/bots/api#sendmessage sendMessage}
+ * with `parse_mode: "HTML"`. When a rich-mode message contains none of these tags,
+ * OpenClaw falls back to `sendMessage` to preserve Telegram's selected-text Quote feature.
+ *
+ * Excluded formatting tags (`p`, `br`, `mark`, `sub`, `sup`, `cite`, `caption`, `aside`,
+ * `footer`, `hr`, `figcaption`) — these are rich-only but their loss in `sendMessage`
+ * rendering is cosmetic, while Quote is a workflow-critical feature.
+ */
+const TELEGRAM_RICH_ESSENTIAL_BLOCK_TAGS = new Set([
+  "audio",
+  "details",
+  "figure",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "img",
+  "ol",
+  "table",
+  "tg-collage",
+  "tg-map",
+  "tg-math-block",
+  "tg-slideshow",
+  "ul",
+  "video",
+]);
+
+// Pattern is intentionally stateful (lastIndex) via exec loop.
+const TELEGRAM_RICH_ESSENTIAL_TAG_RE = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*?>/gi;
+
+/**
+ * Returns `true` when `html` contains block-level rich tags that require
+ * {@link https://core.telegram.org/bots/api#sendrichmessage sendRichMessage}.
+ * When false, the content can be delivered via `sendMessage` with
+ * `parse_mode: "HTML"`, which preserves Telegram's selected-text Quote feature.
+ */
+export function containsRichBlockHtmlContent(html: string): boolean {
+  let match: RegExpExecArray | null;
+  TELEGRAM_RICH_ESSENTIAL_TAG_RE.lastIndex = 0;
+  while ((match = TELEGRAM_RICH_ESSENTIAL_TAG_RE.exec(html)) !== null) {
+    if (TELEGRAM_RICH_ESSENTIAL_BLOCK_TAGS.has(match[2].toLowerCase())) {
+      return true;
+    }
+  }
+  return false;
+}
+
 let fileReferencePattern: RegExp | undefined;
 let orphanedTldPattern: RegExp | undefined;
 

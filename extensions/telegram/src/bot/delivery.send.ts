@@ -5,7 +5,7 @@ import { createTelegramRetryRunner } from "openclaw/plugin-sdk/retry-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { formatErrorMessage } from "openclaw/plugin-sdk/ssrf-runtime";
 import { withTelegramApiErrorLogging } from "../api-logging.js";
-import { markdownToTelegramHtml } from "../format.js";
+import { containsRichBlockHtmlContent, renderTelegramHtmlText } from "../format.js";
 import { isSafeToRetrySendError, isTelegramRateLimitError } from "../network-errors.js";
 import {
   buildTelegramSendParams,
@@ -126,27 +126,31 @@ export async function sendTelegramText(
       skipEntityDetection: opts.linkPreview === false,
       tableMode: opts.tableMode,
     });
-    const res = await sendTelegramWithThreadFallback({
-      operation: "sendRichMessage",
-      runtime,
-      thread: opts.thread,
-      requestParams: toTelegramRichMessageContextParams(baseParams),
-      removeNativeQuoteParam: removeTelegramRichNativeQuoteParam,
-      send: (effectiveParams) =>
-        getTelegramRichRawApi(bot.api).sendRichMessage({
-          chat_id: chatId,
-          rich_message: richMessage,
-          ...(opts.replyMarkup ? { reply_markup: opts.replyMarkup } : {}),
-          ...effectiveParams,
-        }),
-    });
-    runtime.log?.(`telegram sendRichMessage ok chat=${chatId} message=${res.message_id}`);
-    return res.message_id;
+    if (richMessage.html && containsRichBlockHtmlContent(richMessage.html)) {
+      const res = await sendTelegramWithThreadFallback({
+        operation: "sendRichMessage",
+        runtime,
+        thread: opts.thread,
+        requestParams: toTelegramRichMessageContextParams(baseParams),
+        removeNativeQuoteParam: removeTelegramRichNativeQuoteParam,
+        send: (effectiveParams) =>
+          getTelegramRichRawApi(bot.api).sendRichMessage({
+            chat_id: chatId,
+            rich_message: richMessage,
+            ...(opts.replyMarkup ? { reply_markup: opts.replyMarkup } : {}),
+            ...effectiveParams,
+          }),
+      });
+      runtime.log?.(`telegram sendRichMessage ok chat=${chatId} message=${res.message_id}`);
+      return res.message_id;
+    }
+    // No essential rich block content — fall through to plain sendMessage
+    // delivery to preserve Telegram's selected-text Quote feature.
   }
   // Add link_preview_options when link preview is disabled.
   const linkPreviewEnabled = opts?.linkPreview ?? true;
   const linkPreviewOptions = linkPreviewEnabled ? undefined : { is_disabled: true };
-  const htmlText = textMode === "html" ? text : markdownToTelegramHtml(text);
+  const htmlText = renderTelegramHtmlText(text, { textMode, tableMode: opts?.tableMode });
   const fallbackText = opts?.plainText ?? text;
   const hasFallbackText = fallbackText.trim().length > 0;
   const sendPlainFallback = async () => {

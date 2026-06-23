@@ -1208,8 +1208,10 @@ describe("deliverReplies", () => {
       });
     const bot = createBot({ sendMessage });
 
+    // Include a heading so the content routes through sendRichMessage;
+    // otherwise plain text falls back to sendMessage to preserve Quote.
     await deliverWith({
-      replies: [{ text: "Hello there", replyToId: "500" }],
+      replies: [{ text: "# Hello\n\nHello there", replyToId: "500" }],
       runtime,
       bot,
       replyToMode: "all",

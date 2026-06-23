@@ -23,6 +23,7 @@ import { splitTelegramCaption } from "./caption.js";
 import { asTelegramClientFetch, createTelegramClientFetch } from "./client-fetch.js";
 import { resolveTelegramTransport } from "./fetch.js";
 import {
+  containsRichBlockHtmlContent,
   renderTelegramHtmlText,
   splitTelegramHtmlChunks,
   telegramHtmlToPlainTextFallback,
@@ -841,10 +842,17 @@ export async function sendMessageTelegram(
     }));
   };
 
-  const sendChunkedText = async (rawText: string, context: string) =>
-    useRichMessages
-      ? await sendTelegramRichTextChunks(buildRichTextPlan(rawText), context)
-      : await sendTelegramTextChunks(buildChunkedTextPlan(rawText, context), context);
+  const sendChunkedText = async (rawText: string, context: string) => {
+    if (useRichMessages) {
+      const richChunks = buildRichTextPlan(rawText);
+      if (richChunks.some((chunk) => containsRichBlockHtmlContent(chunk.text))) {
+        return await sendTelegramRichTextChunks(richChunks, context);
+      }
+      // No essential rich block content — fall through to plain sendMessage
+      // delivery to preserve Telegram's selected-text Quote feature.
+    }
+    return await sendTelegramTextChunks(buildChunkedTextPlan(rawText, context), context);
+  };
 
   const buildRichTextPlan = (rawText: string): TelegramRichTextChunk[] => {
     const textLimit = Math.min(
@@ -1617,7 +1625,7 @@ export async function editMessageTelegram(
   }
 
   const performTextEdit = () => {
-    if (richRawApi && richMessage) {
+    if (richRawApi && richMessage?.html && containsRichBlockHtmlContent(richMessage.html)) {
       const richEditParams: Pick<TelegramEditRichMessageTextParams, "reply_markup"> =
         replyMarkup === undefined ? {} : { reply_markup: replyMarkup };
       return requestWithEditShouldLog(

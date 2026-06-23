@@ -1,6 +1,7 @@
 // Telegram tests cover format plugin behavior.
 import { describe, expect, it } from "vitest";
 import {
+  containsRichBlockHtmlContent,
   markdownToTelegramChunks,
   markdownToTelegramHtml,
   markdownToTelegramRichHtml,
@@ -588,3 +589,68 @@ function containsLoneSurrogate(text: string): boolean {
   }
   return false;
 }
+
+describe("containsRichBlockHtmlContent", () => {
+  it("returns false for plain text", () => {
+    expect(containsRichBlockHtmlContent("Hello world")).toBe(false);
+  });
+
+  it("returns false for legacy HTML with basic formatting", () => {
+    expect(containsRichBlockHtmlContent("<b>bold</b> <i>italic</i> <code>code</code>")).toBe(false);
+  });
+
+  it("returns false for rich-only formatting tags that are cosmetic", () => {
+    // <br> and <p> are rich-only but not essential; we fall back to
+    // sendMessage to preserve Quote.
+    expect(containsRichBlockHtmlContent("<p>Hello</p><br>world")).toBe(false);
+    expect(containsRichBlockHtmlContent("<mark>hi</mark> <sub>lo</sub> <sup>hi</sup>")).toBe(false);
+  });
+
+  it("returns true for a table", () => {
+    expect(containsRichBlockHtmlContent("<table><tr><td>x</td></tr></table>")).toBe(true);
+  });
+
+  it("returns true for a heading", () => {
+    expect(containsRichBlockHtmlContent("<h1>Title</h1>")).toBe(true);
+    expect(containsRichBlockHtmlContent("<h6>Deep</h6>")).toBe(true);
+  });
+
+  it("returns true for ordered and unordered lists", () => {
+    expect(containsRichBlockHtmlContent("<ol><li>item</li></ol>")).toBe(true);
+    expect(containsRichBlockHtmlContent("<ul><li>item</li></ul>")).toBe(true);
+  });
+
+  it("returns true for details", () => {
+    expect(containsRichBlockHtmlContent("<details><summary>title</summary>body</details>")).toBe(
+      true,
+    );
+  });
+
+  it("returns true for rich media blocks", () => {
+    expect(
+      containsRichBlockHtmlContent(
+        '<figure><img src="https://example.com/a.png" alt="pic"/></figure>',
+      ),
+    ).toBe(true);
+    expect(containsRichBlockHtmlContent('<video src="https://example.com/v.mp4"/>')).toBe(true);
+    expect(containsRichBlockHtmlContent('<audio src="https://example.com/s.mp3"/>')).toBe(true);
+  });
+
+  it("returns true for rich-native blocks", () => {
+    expect(containsRichBlockHtmlContent("<tg-collage></tg-collage>")).toBe(true);
+    expect(containsRichBlockHtmlContent("<tg-slideshow></tg-slideshow>")).toBe(true);
+    expect(containsRichBlockHtmlContent('<tg-map lat="1" long="2"/>')).toBe(true);
+    expect(containsRichBlockHtmlContent("<tg-math-block>x</tg-math-block>")).toBe(true);
+  });
+
+  it("returns true for mixed content with a rich block", () => {
+    expect(
+      containsRichBlockHtmlContent("<b>bold</b> <i>italic</i> <table><tr><td>x</td></tr></table>"),
+    ).toBe(true);
+  });
+
+  it("is case-insensitive for tag names", () => {
+    expect(containsRichBlockHtmlContent("<TABLE><TR><TD>x</TD></TR></TABLE>")).toBe(true);
+    expect(containsRichBlockHtmlContent("<H1>Title</H1>")).toBe(true);
+  });
+});
