@@ -621,6 +621,9 @@
       }
     ]
   },
+  "providerAuthAliases": {
+    "google-gemini-cli": "google"
+  },
   "cliBackends": ["google-gemini-cli"],
   "providerAuthChoices": [
     {
