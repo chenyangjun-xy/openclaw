@@ -10,7 +10,7 @@ export const QA_MATURITY_TAXONOMY_PATH = "taxonomy.yaml";
 export const QA_MATURITY_SCORES_PATH = "qa/maturity-scores.yaml";
 export const QA_MATURITY_SCORE_KEYS = ["quality", "completeness"] as const;
 export const QA_MATURITY_SCORE_LABELS = [
-  "Lovable",
+  "Clawesome",
   "Stable",
   "Beta",
   "Alpha",
@@ -802,7 +802,7 @@ function buildMaturityRefs(taxonomy: QaMaturityTaxonomy | null) {
     return { categories, coverageIds };
   }
 
-  for (const surface of taxonomy.surfaces) {
+  for (const surface of activeQaMaturityTaxonomySurfaces(taxonomy)) {
     for (const category of surface.categories) {
       const categoryId = `${surface.id}.${category.id}`;
       const features = category.features.map((feature) => ({

@@ -219,6 +219,12 @@ profiles:
       - browser-automation-and-exec-sandbox-tools.browser-automation
       - browser-automation-and-exec-sandbox-tools.tool-invocation-and-execution
       - browser-automation-and-exec-sandbox-tools.sandbox-and-tool-policy
+  - id: all
+    description: Full taxonomy scorecard selector for generated maturity coverage evidence across
+      every active category. Intended for explicit QA evidence workflow dispatches rather than the
+      default release gate.
+    channelDriver: live
+    includeAllCategories: true
 levels:
   - id: planned
     code: M0
@@ -245,9 +251,9 @@ levels:
     label: Stable
     meaning: Recommended path for normal users. Failures are treated as regressions.
     promotion_bar: Release gate, doctor/troubleshooting path, broad docs, and repeated real-world proof.
-  - id: lovable
+  - id: clawesome
     code: M5
-    label: Lovable
+    label: Clawesome
     meaning: Polished, delightful, well-instrumented, and competitive with the best comparable workflow.
     promotion_bar: Stable plus user scorecard pass across representative users.
 surfaces:
