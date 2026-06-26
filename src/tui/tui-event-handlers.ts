@@ -26,6 +26,7 @@ type EventHandlerChatLog = {
   updateAssistant: (text: string, runId: string) => void;
   finalizeAssistant: (text: string, runId: string) => void;
   dropAssistant: (runId: string) => void;
+  hasStreamingRun: (runId: string) => boolean;
 };
 
 type EventHandlerTui = {
@@ -632,51 +633,64 @@ export function createEventHandlers(context: EventHandlerContext) {
         }
       }
     }
-    // When a sessions.changed "new" event surrendered this runId to a pending
-    // loadHistory() call, the history replay will have already rendered the
-    // message as a static entry. Late-arriving delta or final events must not
-    // append a duplicate. Just clean up tracking state for final events.
+    // When a sessions.changed "new" event surrendered this runId to a
+    // pending loadHistory() call, the history replay may have already
+    // rendered the message as a static entry. If loadHistory() restored
+    // the run as in-flight (via inFlightRun), the runId will have an
+    // active streaming component — do NOT suppress it, because the
+    // in-flight streaming component needs live delta/final events to
+    // reach its final state. Only suppress when there is no active
+    // streaming component, meaning the message was replayed as a static
+    // entry and a late final event would append a duplicate.
     if (surrenderedToHistoryRunIds.has(evt.runId)) {
-      if (evt.state === "delta") {
-        return;
-      }
-      if (evt.state === "final") {
+      // loadHistory() restored this run as in-flight — keep processing
+      // normally so the streaming component stays live.
+      if (chatLog.hasStreamingRun(evt.runId)) {
         surrenderedToHistoryRunIds.delete(evt.runId);
-        // Still finalize the run's tracking state so the activity indicator
-        // and pending-run cleanup stay consistent, but do not re-render the
-        // message text — history replay already displayed it.
-        noteFinalizedRun(evt.runId);
-        const wasActiveRun = state.activeChatRunId === evt.runId;
-        clearActiveRunIfMatch(evt.runId);
-        const promotedRemainingRun = promoteMostRecentSessionRun();
-        flushPendingHistoryRefreshIfIdle();
-        if (!promotedRemainingRun) {
-          if (wasActiveRun) {
-            setActivityStatus("idle");
-            clearStreamingWatchdog();
-          } else {
-            if (streamingWatchdogRunId === evt.runId) {
-              clearStreamingWatchdog();
-            }
-            clearStaleStreamingIfNoTrackedRunRemains();
-          }
+        // Fall through to normal event handling below.
+      } else {
+        if (evt.state === "delta") {
+          return;
         }
-        void refreshSessionInfo?.();
-        tui.requestRender();
-        return;
-      }
-      // For aborted / error states after surrender, clean up but don't render
-      // duplicate history entries.
-      if (evt.state === "aborted" || evt.state === "error") {
-        surrenderedToHistoryRunIds.delete(evt.runId);
-        completedRuns.set(evt.runId, Date.now());
-        pruneRunMap(completedRuns);
-        streamAssembler.drop(evt.runId);
-        clearActiveRunIfMatch(evt.runId);
-        promoteMostRecentSessionRun();
-        flushPendingHistoryRefreshIfIdle();
-        tui.requestRender();
-        return;
+        if (evt.state === "final") {
+          surrenderedToHistoryRunIds.delete(evt.runId);
+          // Still finalize the run's tracking state so the activity
+          // indicator and pending-run cleanup stay consistent, but do
+          // not re-render the message text — history replay already
+          // displayed it as a static entry.
+          noteFinalizedRun(evt.runId);
+          const wasActiveRun = state.activeChatRunId === evt.runId;
+          clearActiveRunIfMatch(evt.runId);
+          const promotedRemainingRun = promoteMostRecentSessionRun();
+          flushPendingHistoryRefreshIfIdle();
+          if (!promotedRemainingRun) {
+            if (wasActiveRun) {
+              setActivityStatus("idle");
+              clearStreamingWatchdog();
+            } else {
+              if (streamingWatchdogRunId === evt.runId) {
+                clearStreamingWatchdog();
+              }
+              clearStaleStreamingIfNoTrackedRunRemains();
+            }
+          }
+          void refreshSessionInfo?.();
+          tui.requestRender();
+          return;
+        }
+        // For aborted / error states after surrender, clean up but
+        // don't render duplicate history entries.
+        if (evt.state === "aborted" || evt.state === "error") {
+          surrenderedToHistoryRunIds.delete(evt.runId);
+          completedRuns.set(evt.runId, Date.now());
+          pruneRunMap(completedRuns);
+          streamAssembler.drop(evt.runId);
+          clearActiveRunIfMatch(evt.runId);
+          promoteMostRecentSessionRun();
+          flushPendingHistoryRefreshIfIdle();
+          tui.requestRender();
+          return;
+        }
       }
     }
     if (reconnectPendingRunId === evt.runId) {

@@ -20,6 +20,7 @@ type HandlerChatLog = {
   updateAssistant: (...args: unknown[]) => void;
   finalizeAssistant: (...args: unknown[]) => void;
   dropAssistant: (...args: unknown[]) => void;
+  hasStreamingRun: (...args: unknown[]) => boolean;
 };
 type HandlerBtwPresenter = {
   showResult: (...args: unknown[]) => void;
@@ -35,6 +36,7 @@ type MockChatLog = {
   updateAssistant: MockFn;
   finalizeAssistant: MockFn;
   dropAssistant: MockFn;
+  hasStreamingRun: MockFn;
 };
 type MockBtwPresenter = {
   showResult: MockFn;
@@ -52,6 +54,7 @@ function createMockChatLog(): MockChatLog & HandlerChatLog {
     updateAssistant: vi.fn(),
     finalizeAssistant: vi.fn(),
     dropAssistant: vi.fn(),
+    hasStreamingRun: vi.fn().mockReturnValue(false),
   } as unknown as MockChatLog & HandlerChatLog;
 }
 
