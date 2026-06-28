@@ -26,6 +26,7 @@ type EventHandlerChatLog = {
   updateAssistant: (text: string, runId: string) => void;
   finalizeAssistant: (text: string, runId: string) => void;
   dropAssistant: (runId: string) => void;
+  hasStreamingRun: (runId: string) => boolean;
 };
 
 type EventHandlerTui = {
@@ -89,6 +90,16 @@ export function createEventHandlers(context: EventHandlerContext) {
   let lastSessionKey = state.currentSessionKey;
   let pendingHistoryRefresh = false;
   let reconnectPendingRunId: string | null = null;
+  // RunIds surrendered to a pending loadHistory() call from
+  // handleSessionsChangedEvent. When the sessions.changed "new" event fires
+  // after a chat run starts streaming, loadHistory() clears the chat log and
+  // replays the message as a static entry. If the final chat event arrives
+  // AFTER that replay, finalizeAssistant creates a duplicate because the
+  // streaming component was already removed. Tracking surrendered runIds lets
+  // us skip the late final event and avoid the duplicate.
+  const surrenderedToHistoryRunIds = new Set<string>();
+  let surrenderedToHistoryCleanupTimer: ReturnType<typeof setTimeout> | null = null;
+  const SURRENDERED_TO_HISTORY_CLEANUP_MS = 15_000;
   const pendingTerminalLifecycleErrors = new Map<
     string,
     { errorMessage: string; timer: ReturnType<typeof setTimeout> }
@@ -138,6 +149,17 @@ export function createEventHandlers(context: EventHandlerContext) {
       clearTimeout(pending.timer);
     }
     pendingTerminalLifecycleErrors.clear();
+  };
+
+  const scheduleSurrenderedRunIdsCleanup = () => {
+    if (surrenderedToHistoryCleanupTimer) {
+      clearTimeout(surrenderedToHistoryCleanupTimer);
+    }
+    surrenderedToHistoryCleanupTimer = setTimeout(() => {
+      surrenderedToHistoryRunIds.clear();
+      surrenderedToHistoryCleanupTimer = null;
+    }, SURRENDERED_TO_HISTORY_CLEANUP_MS);
+    surrenderedToHistoryCleanupTimer.unref?.();
   };
 
   const pauseStreamingWatchdog = () => {
@@ -611,6 +633,66 @@ export function createEventHandlers(context: EventHandlerContext) {
         }
       }
     }
+    // When a sessions.changed "new" event surrendered this runId to a
+    // pending loadHistory() call, the history replay may have already
+    // rendered the message as a static entry. If loadHistory() restored
+    // the run as in-flight (via inFlightRun), the runId will have an
+    // active streaming component — do NOT suppress it, because the
+    // in-flight streaming component needs live delta/final events to
+    // reach its final state. Only suppress when there is no active
+    // streaming component, meaning the message was replayed as a static
+    // entry and a late final event would append a duplicate.
+    if (surrenderedToHistoryRunIds.has(evt.runId)) {
+      // loadHistory() restored this run as in-flight — keep processing
+      // normally so the streaming component stays live.
+      if (chatLog.hasStreamingRun(evt.runId)) {
+        surrenderedToHistoryRunIds.delete(evt.runId);
+        // Fall through to normal event handling below.
+      } else {
+        if (evt.state === "delta") {
+          return;
+        }
+        if (evt.state === "final") {
+          surrenderedToHistoryRunIds.delete(evt.runId);
+          // Still finalize the run's tracking state so the activity
+          // indicator and pending-run cleanup stay consistent, but do
+          // not re-render the message text — history replay already
+          // displayed it as a static entry.
+          noteFinalizedRun(evt.runId);
+          const wasActiveRun = state.activeChatRunId === evt.runId;
+          clearActiveRunIfMatch(evt.runId);
+          const promotedRemainingRun = promoteMostRecentSessionRun();
+          flushPendingHistoryRefreshIfIdle();
+          if (!promotedRemainingRun) {
+            if (wasActiveRun) {
+              setActivityStatus("idle");
+              clearStreamingWatchdog();
+            } else {
+              if (streamingWatchdogRunId === evt.runId) {
+                clearStreamingWatchdog();
+              }
+              clearStaleStreamingIfNoTrackedRunRemains();
+            }
+          }
+          void refreshSessionInfo?.();
+          tui.requestRender();
+          return;
+        }
+        // For aborted / error states after surrender, clean up but
+        // don't render duplicate history entries.
+        if (evt.state === "aborted" || evt.state === "error") {
+          surrenderedToHistoryRunIds.delete(evt.runId);
+          completedRuns.set(evt.runId, Date.now());
+          pruneRunMap(completedRuns);
+          streamAssembler.drop(evt.runId);
+          clearActiveRunIfMatch(evt.runId);
+          promoteMostRecentSessionRun();
+          flushPendingHistoryRefreshIfIdle();
+          tui.requestRender();
+          return;
+        }
+      }
+    }
     if (reconnectPendingRunId === evt.runId) {
       reconnectPendingRunId = null;
     }
@@ -745,6 +827,32 @@ export function createEventHandlers(context: EventHandlerContext) {
     }
     if (evt.reason !== "new" && evt.reason !== "reset") {
       return;
+    }
+
+    // When a sessions.changed "new" event fires while a chat run is still
+    // streaming, the subsequent loadHistory() will clear the chat log and
+    // replay the message as a static entry. If the final chat event arrives
+    // after that replay, finalizeAssistant would append a duplicate because
+    // the streaming component is already gone. Save every tracked runId so
+    // handleChatEvent can skip late-arriving deltas/finals that history
+    // replay already covered.
+    if (evt.reason === "new") {
+      if (state.activeChatRunId) {
+        surrenderedToHistoryRunIds.add(state.activeChatRunId);
+      }
+      if (state.pendingChatRunId) {
+        surrenderedToHistoryRunIds.add(state.pendingChatRunId);
+      }
+      for (const runId of sessionRuns.keys()) {
+        surrenderedToHistoryRunIds.add(runId);
+      }
+      // finalizedRuns entries are already resolved; include them so a
+      // duplicate final event (rare, but possible during reconnect storms)
+      // is also suppressed.
+      for (const runId of finalizedRuns.keys()) {
+        surrenderedToHistoryRunIds.add(runId);
+      }
+      scheduleSurrenderedRunIdsCleanup();
     }
 
     clearTrackedRunState();
@@ -953,6 +1061,11 @@ export function createEventHandlers(context: EventHandlerContext) {
   const dispose = () => {
     clearStreamingWatchdog();
     clearPendingTerminalLifecycleErrors();
+    if (surrenderedToHistoryCleanupTimer) {
+      clearTimeout(surrenderedToHistoryCleanupTimer);
+      surrenderedToHistoryCleanupTimer = null;
+    }
+    surrenderedToHistoryRunIds.clear();
   };
 
   const consumeCompletedRunForPendingSend = (runId: string) => {

@@ -323,6 +323,10 @@ export class ChatLog extends Container {
     this.streamingRuns.delete(effectiveRunId);
   }
 
+  hasStreamingRun(runId?: string) {
+    return this.streamingRuns.has(this.resolveRunId(runId));
+  }
+
   showBtw(params: { question: string; text: string; isError?: boolean }) {
     if (this.btwMessage) {
       this.btwMessage.setResult(params);
