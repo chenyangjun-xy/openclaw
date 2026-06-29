@@ -1087,6 +1087,7 @@ export async function truncateOversizedToolResultsInSession(params: {
     sessionLock = await acquireSessionWriteLock({
       sessionFile,
       ...resolveSessionWriteLockOptions(params.config),
+      allowReentrant: true,
     });
     const state = await readTranscriptFileState(sessionFile);
     return await truncateOversizedToolResultsInTranscriptState({

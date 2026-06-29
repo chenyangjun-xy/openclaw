@@ -1185,6 +1185,7 @@ async function compactEmbeddedAgentSessionDirectOnce(
           timeoutMs: compactionTimeoutMs,
         }),
       }),
+      allowReentrant: true,
     });
     try {
       await repairSessionFileIfNeeded({
