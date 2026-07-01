@@ -123,7 +123,7 @@ function resolveWebProviderLoadOptions(
     },
     {
       cache: params.cache ?? true,
-      activate: params.activate ?? false,
+      activate: params.activate ?? true,
       ...(hasExplicitPluginIdScope(context.loadPluginIds)
         ? { onlyPluginIds: context.loadPluginIds }
         : {}),
@@ -197,7 +197,7 @@ export function resolvePluginWebProviders<TEntry>(
         {
           onlyPluginIds: pluginIds,
           cache: params.cache ?? true,
-          activate: params.activate ?? false,
+          activate: params.activate ?? true,
         },
       ),
     );
