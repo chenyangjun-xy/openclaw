@@ -3363,12 +3363,12 @@ export async function runAgentTurnWithFallback(params: {
   }
 
   // Surface non_deliverable_terminal_turn as a specific, actionable message
-  // instead of the generic "Something went wrong" fallback. The embedded runner
-  // already auto-retried once inside run.ts; this handles the exhausted case.
+  // instead of the generic "Agent couldn't generate a response" fallback. The
+  // embedded runner already auto-retried once inside run.ts; this handles the
+  // exhausted case. run.ts returns error payloads with text for this kind, so
+  // we override with the more specific copy instead of gating on empty payloads.
   if (runResult) {
-    const isNonDeliverable = runResult.meta?.error?.kind === "non_deliverable_terminal_turn";
-    const hasAnyPayloadText = runResult.payloads?.some((p) => normalizeOptionalString(p.text));
-    if (isNonDeliverable && !hasAnyPayloadText) {
+    if (runResult.meta?.error?.kind === "non_deliverable_terminal_turn") {
       params.replyOperation?.fail("run_failed", new Error("non_deliverable_terminal_turn"));
       return {
         kind: "final",

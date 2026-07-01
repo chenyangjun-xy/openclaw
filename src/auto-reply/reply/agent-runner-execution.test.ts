@@ -8109,9 +8109,13 @@ describe("runAgentTurnWithFallback", () => {
 
   it("surfaces specific message when embedded run reports non_deliverable_terminal_turn error", async () => {
     // The embedded runner (run.ts) already retried internally and exhausted.
-    // It surfaces the error via meta.error.kind with no payload text.
+    // run.ts returns the error via meta.error.kind and includes a generic error
+    // payload ("Agent couldn't generate a response."). The reply layer must
+    // replace that generic text with the specific non-deliverable copy.
     state.runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [],
+      payloads: [
+        { text: "⚠️ Agent couldn't generate a response. Please try again.", isError: true },
+      ],
       meta: {
         error: {
           kind: "non_deliverable_terminal_turn",
@@ -8135,10 +8139,13 @@ describe("runAgentTurnWithFallback", () => {
     expect(payloadText).toBe(NON_DELIVERABLE_TERMINAL_TURN_USER_TEXT);
   });
 
-  it("surfaces specific message when non_deliverable_terminal_turn with no payload text", async () => {
-    // Error payload without text — still surfaces the specific message.
+  it("calls replyOperation.fail and surfaces specific message for non_deliverable_terminal_turn", async () => {
+    // Verifies the replyOp integration: fail() is called and the specific
+    // non-deliverable copy replaces the generic runner error payload text.
     state.runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [],
+      payloads: [
+        { text: "⚠️ Agent couldn't generate a response. Please try again.", isError: true },
+      ],
       meta: {
         error: {
           kind: "non_deliverable_terminal_turn",
