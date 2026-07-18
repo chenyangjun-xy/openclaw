@@ -83,7 +83,7 @@ function spawnGogServe(cfg: GmailHookRuntimeConfig): ChildProcess {
     log.error(`gog stdout error: ${String(err)}`);
   });
   child.stdout?.on("data", (data: Buffer) => {
-    const line = data.toString().trim();
+    const line = data.toString("utf8").trim();
     if (line) {
       log.info(`[gog] ${line}`);
     }
@@ -93,7 +93,7 @@ function spawnGogServe(cfg: GmailHookRuntimeConfig): ChildProcess {
     log.error(`gog stderr error: ${String(err)}`);
   });
   child.stderr?.on("data", (data: Buffer) => {
-    const line = data.toString().trim();
+    const line = data.toString("utf8").trim();
     if (!line) {
       return;
     }
