@@ -17,6 +17,22 @@ function createProps(snapshot: ChannelsProps["snapshot"]): ChannelsProps {
     snapshot,
     lastError: null,
     lastSuccessAt: null,
+    pairingLoading: false,
+    pairingSnapshot: {
+      accounts: [],
+      requests: [],
+      commandOwnerConfigured: true,
+      limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+    },
+    pairingError: null,
+    pairingLastSuccessAt: null,
+    pairingBusyRequestId: null,
+    pairingChannelFilter: null,
+    pairingAccountFilter: null,
+    pairingPrompt: null,
+    pairingNotice: null,
+    canManagePairing: true,
+    canAdmin: true,
     whatsappMessage: null,
     whatsappQrDataUrl: null,
     whatsappConnected: null,
@@ -40,6 +56,14 @@ function createProps(snapshot: ChannelsProps["snapshot"]): ChannelsProps {
     onWizardToggleMultiselect: () => {},
     onWizardClose: () => {},
     onRefresh: () => {},
+    onPairingRefresh: () => {},
+    onPairingFilterChange: () => {},
+    onPairingReviewAccount: () => {},
+    onPairingApprove: () => {},
+    onPairingDismiss: () => {},
+    onPairingPromptChange: () => {},
+    onPairingPromptCancel: () => {},
+    onPairingPromptConfirm: () => {},
     onWhatsAppStart: () => {},
     onWhatsAppWait: () => {},
     onWhatsAppLogout: () => {},
@@ -89,6 +113,7 @@ function renderWhatsAppButtons(params: {
   render(renderWhatsAppCard({ props, whatsapp }), container);
   const buttons = Array.from(container.querySelectorAll("button"));
   return {
+    container,
     buttons,
     labels: buttons.map((button) => button.textContent?.trim()),
   };
@@ -172,6 +197,36 @@ describe("channel display selectors", () => {
   });
 });
 
+describe("WhatsApp status", () => {
+  function renderPhoneFact(self: WhatsAppStatus["self"]): string | undefined {
+    const whatsapp = createWhatsAppStatus({ linked: true, self });
+    const props = createProps({
+      ts: Date.now(),
+      channelOrder: ["whatsapp"],
+      channelLabels: { whatsapp: "WhatsApp" },
+      channels: { whatsapp },
+      channelAccounts: {},
+      channelDefaultAccountId: {},
+    });
+    const container = document.createElement("div");
+    render(renderWhatsAppCard({ props, whatsapp }), container);
+    const label = Array.from(container.querySelectorAll("dt")).find(
+      (node) => node.textContent?.trim() === "Phone number",
+    );
+    return label?.nextElementSibling?.textContent?.trim();
+  }
+
+  it("renders readable phone identity with raw fallback and no JID fallback", () => {
+    expect(renderPhoneFact({ e164: "+4930123456", jid: "4930123456@s.whatsapp.net" })).toBe(
+      "Germany · +49 30 123456",
+    );
+    expect(renderPhoneFact({ e164: "not-a-phone", jid: "account@s.whatsapp.net" })).toBe(
+      "not-a-phone",
+    );
+    expect(renderPhoneFact({ jid: "account@s.whatsapp.net" })).toBeUndefined();
+  });
+});
+
 describe("WhatsApp card actions", () => {
   it("shows QR as the primary action before WhatsApp is linked", () => {
     const onWhatsAppStart = vi.fn();
@@ -210,5 +265,16 @@ describe("WhatsApp card actions", () => {
     });
 
     expect(labels).toEqual(["Save", "Reload", "Show QR", "Wait for scan", "Logout", "Refresh"]);
+  });
+
+  it("renders the QR directly above the action row so it is visible next to Show QR", () => {
+    const { container } = renderWhatsAppButtons({
+      linked: false,
+      qrDataUrl: "data:image/png;base64,current-qr",
+    });
+
+    const qrRow = container.querySelector(".qr-wrap")?.closest(".settings-row");
+    expect(qrRow).not.toBeNull();
+    expect(qrRow?.nextElementSibling?.classList.contains("settings-row--actions")).toBe(true);
   });
 });

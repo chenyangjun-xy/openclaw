@@ -253,8 +253,32 @@ vi.mock("./reply-media-paths.runtime.js", () => ({
   createReplyMediaPathNormalizer: () => (payload: unknown) => payload,
 }));
 
-export async function getRunAgentTurnWithFallback() {
-  return (await import("./agent-runner-execution.js")).runAgentTurnWithFallback;
+export async function getExecuteAgentTurnForTest() {
+  const execute = (await import("./agent-runner-execution.js")).executeAgentTurn;
+  return async (...args: Parameters<typeof execute>) => {
+    const execution = await execute(...args);
+    const outcome = execution.outcome;
+    if (outcome.kind === "settled") {
+      return {
+        kind: "success" as const,
+        runId: execution.runId,
+        runResult: outcome.result,
+        fallbackProvider: outcome.resolved.provider,
+        fallbackModel: outcome.resolved.model,
+        ...(outcome.fallback.exhausted ? { fallbackExhausted: true as const } : {}),
+        fallbackAttempts: outcome.fallback.attempts,
+        didLogHeartbeatStrip: outcome.didLogHeartbeatStrip,
+        autoCompactionCount: outcome.autoCompactionCount,
+        directlySentBlockKeys: outcome.directlySentBlockKeys,
+        directlySentBlockPayloads: outcome.directlySentBlockPayloads,
+        terminalFailurePayload: outcome.terminalFailurePayload,
+      };
+    }
+    if (outcome.kind === "rejected") {
+      return { kind: "final" as const, payload: outcome.payload };
+    }
+    return { kind: "final" as const, payload: { text: "NO_REPLY" } };
+  };
 }
 
 export type FallbackRunnerParams = {
@@ -301,6 +325,7 @@ export type EmbeddedAgentParams = {
     toolCallId?: string;
     itemId?: string;
   }) => void;
+  onLaneWait?: (info: { waitMs: number; queuedAhead: number; waiting?: boolean }) => void;
   onBlockReply?: (payload: { text?: string; mediaUrls?: string[] }) => Promise<void> | void;
   onPartialReply?: (payload: { text?: string; mediaUrls?: string[] }) => Promise<void> | void;
   onAssistantMessageStart?: () => Promise<void> | void;
@@ -406,6 +431,7 @@ export function createMockReplyOperation(options?: { abortSignal?: AbortSignal }
       key: "main",
       sessionId: "session",
       abortSignal: options?.abortSignal ?? new AbortController().signal,
+      staleExpiryReason: undefined,
       resetTriggered: false,
       terminalRecovery: false,
       acceptedSteeredInboundAudio: false,
@@ -418,6 +444,8 @@ export function createMockReplyOperation(options?: { abortSignal?: AbortSignal }
       setPhase: vi.fn(),
       markWaitingForDeferredMaintenance: vi.fn(),
       markDeferredMaintenanceWaitEnded: vi.fn(),
+      markWaitingForGlobalLane: vi.fn(),
+      markGlobalLaneWaitEnded: vi.fn(),
       updateSessionId: updateSessionIdMock,
       updateSessionKey: vi.fn(),
       attachBackend: vi.fn(),
