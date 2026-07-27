@@ -149,7 +149,7 @@ describe("board gateway methods", () => {
       viewTicket: expect.stringMatching(/^v1\./u),
       viewTicketTtlMs: 120_000,
       viewGeneration: expect.stringMatching(/^[a-f0-9]{32}$/u),
-      sandboxUrl: "/mcp-app-sandbox",
+      sandboxUrl: expect.stringMatching(/^\/mcp-app-sandbox\?csp=/u),
       sandboxPort: 18790,
     });
     expect(first.widgets.find((widget) => widget.name === "status")).toMatchObject({
@@ -198,6 +198,27 @@ describe("board gateway methods", () => {
 
     expect(ensureSandboxHostPort).toHaveBeenCalledOnce();
     expect(snapshot.widgets[0]).toMatchObject({ sandboxPort: 18790 });
+  });
+
+  it("prepares HTML widget documents with the snapshot instead of rereading the store", async () => {
+    const { invoke, store } = createHarness();
+    await invoke("board.widget.put", {
+      sessionKey: "agent:main:main",
+      name: "first",
+      content: { kind: "html", html: "<p>first</p>" },
+    });
+    await invoke("board.widget.put", {
+      sessionKey: "agent:main:main",
+      name: "second",
+      content: { kind: "html", html: "<p>second</p>" },
+    });
+    const preparedRead = vi.spyOn(store, "getSnapshotWithHtmlDocuments");
+    const documentRead = vi.spyOn(store, "readWidgetHtml");
+
+    await invoke("board.get", { sessionKey: "agent:main:main" });
+
+    expect(preparedRead).toHaveBeenCalledOnce();
+    expect(documentRead).not.toHaveBeenCalled();
   });
 
   it("applies updates and broadcasts board.changed", async () => {

@@ -170,6 +170,7 @@ describe("web search runtime", () => {
   let resolveWebSearchProviderId: typeof import("./runtime.js").resolveWebSearchProviderId;
   let activateSecretsRuntimeSnapshot: typeof import("../secrets/runtime.js").activateSecretsRuntimeSnapshot;
   let clearSecretsRuntimeSnapshot: typeof import("../secrets/runtime.js").clearSecretsRuntimeSnapshot;
+  let clearRuntimeConfigSnapshot: typeof import("../config/config.js").clearRuntimeConfigSnapshot;
   let setRuntimeConfigSnapshot: typeof import("../config/config.js").setRuntimeConfigSnapshot;
   const tempDirs: string[] = [];
 
@@ -178,10 +179,12 @@ describe("web search runtime", () => {
       await import("./runtime.js"));
     ({ activateSecretsRuntimeSnapshot, clearSecretsRuntimeSnapshot } =
       await import("../secrets/runtime.js"));
-    ({ setRuntimeConfigSnapshot } = await import("../config/config.js"));
+    ({ clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } =
+      await import("../config/config.js"));
   });
 
   beforeEach(() => {
+    clearRuntimeConfigSnapshot();
     resolveManifestContractOwnerPluginIdMock.mockReset();
     resolvePluginWebSearchProvidersMock.mockReset();
     resolveRuntimeWebSearchProvidersMock.mockReset();
@@ -191,6 +194,7 @@ describe("web search runtime", () => {
   });
 
   afterEach(() => {
+    clearRuntimeConfigSnapshot();
     clearSecretsRuntimeSnapshot();
     clearRuntimeAuthProfileStoreSnapshots();
     for (const tempDir of tempDirs.splice(0)) {
@@ -456,7 +460,7 @@ describe("web search runtime", () => {
       runWebSearch({
         config: {
           agents: {
-            list: [{ id: "main", agentDir }],
+            list: [{ id: "main", default: true, agentDir }],
           },
         },
         args: { query: "oauth-backed web search" },
