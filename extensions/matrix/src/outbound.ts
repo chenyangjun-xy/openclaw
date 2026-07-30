@@ -5,6 +5,7 @@ import {
   sendPayloadMediaSequence,
 } from "openclaw/plugin-sdk/reply-payload";
 import {
+  MATRIX_PRESENTATION_CAPABILITIES,
   renderMatrixPresentationPayload,
   resolveMatrixExtraContent,
   resolveMatrixPayloadText,
@@ -33,19 +34,7 @@ export const matrixOutbound: ChannelOutboundAdapter = {
   chunker: chunkTextForOutbound,
   chunkerMode: "markdown",
   textChunkLimit: 4000,
-  presentationCapabilities: {
-    supported: true,
-    buttons: true,
-    selects: true,
-    context: true,
-    divider: true,
-    limits: {
-      text: {
-        markdownDialect: "markdown",
-        supportsEdit: true,
-      },
-    },
-  },
+  presentationCapabilities: MATRIX_PRESENTATION_CAPABILITIES,
   renderPresentation: ({ payload, presentation }) =>
     renderMatrixPresentationPayload({ payload, presentation }),
   sendPayload: async ({
