@@ -163,6 +163,16 @@ function isInsideCodeContainer(str: string, pos: number): boolean {
   return false;
 }
 
+/**
+ * True when a double-escaped `\n`/`\t`/`\r` at `escapePos` is a Python
+ * string-literal escape that must be preserved (not a code structure that
+ * needs repair). Mirrors the quote-aware guard used by the structural pass:
+ * inline code containers (`python -c "..."`) remain eligible for repair.
+ */
+function shouldPreserveDoubleEscapedCharInString(value: string, escapePos: number): boolean {
+  return isInsideStringLiteral(value, escapePos) && !isInsideCodeContainer(value, escapePos);
+}
+
 /** Fix double-escaped JSON strings in code-like tool call argument values. */
 function repairDoubleEscapedCodeStrings(args: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(args)) {
@@ -183,18 +193,26 @@ function repairDoubleEscapedCodeStrings(args: Record<string, unknown>): void {
               // (e.g. python -c "...").  Position of the escape
               // char itself is offset + prefix.length.
               const escapePos = offset + prefix.length;
-              if (
-                isInsideStringLiteral(repaired, escapePos) &&
-                !isInsideCodeContainer(repaired, escapePos)
-              ) {
+              if (shouldPreserveDoubleEscapedCharInString(repaired, escapePos)) {
                 return _match;
               }
               return `${prefix}${TOOLCALL_REPAIR_DOUBLE_ESCAPE_MAP[char] ?? char}`;
             },
           );
+          // Chain pass: decode the second escape in a consecutive pair
+          // (`pass\n\n`, `return\t\tx`) whose first escape the structural
+          // pass just turned into a real newline/tab. Guarded by the same
+          // quote-aware check so literal `\n\n` inside a string literal is
+          // never rewritten even when an earlier block in the same argument
+          // matched the code-block fingerprint (ClawSweeper P1 #110823).
           repaired = repaired.replace(
             /\\([nrt])(?=\s*\\([nrt]))/gs,
-            (_match, char) => TOOLCALL_REPAIR_DOUBLE_ESCAPE_MAP[char] ?? _match,
+            (_match, char, _lookaheadChar, offset) => {
+              if (shouldPreserveDoubleEscapedCharInString(repaired, offset)) {
+                return _match;
+              }
+              return TOOLCALL_REPAIR_DOUBLE_ESCAPE_MAP[char] ?? _match;
+            },
           );
           if (repaired === prev) {
             break;
@@ -202,12 +220,16 @@ function repairDoubleEscapedCodeStrings(args: Record<string, unknown>): void {
         }
         // Final cleanup: remaining escapes preceded by a real newline
         // (result of a prior repair) that were not matched because their
-        // prefix character was not a structural token.
-        repaired = repaired.replace(
-          /(\n)\\([nrt])/g,
-          (_match, nl) =>
-            nl + (TOOLCALL_REPAIR_DOUBLE_ESCAPE_MAP[_match.slice(-1)] ?? _match.slice(-1)),
-        );
+        // prefix character was not a structural token. Quote-aware so a
+        // literal escape after a real newline inside a string literal is
+        // preserved.
+        repaired = repaired.replace(/(\n)\\([nrt])/g, (_match, nl, char, offset) => {
+          const escapePos = offset + nl.length;
+          if (shouldPreserveDoubleEscapedCharInString(repaired, escapePos)) {
+            return _match;
+          }
+          return nl + (TOOLCALL_REPAIR_DOUBLE_ESCAPE_MAP[char] ?? char);
+        });
         args[key] = repaired;
       }
     } else if (value && typeof value === "object" && !Array.isArray(value)) {

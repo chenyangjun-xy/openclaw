@@ -1,4 +1,5 @@
 // Coverage for repairing malformed streamed tool-call arguments.
+import { createServer, request as httpRequest, type Server } from "node:http";
 import { describe, expect, it } from "vitest";
 import { wrapStreamFnTextTransforms } from "../../plugin-text-transforms.js";
 import {
@@ -872,5 +873,208 @@ describe("wrapStreamResultRepairDoubleEscapedCodeStrings", () => {
     expect(args?.command).toContain("\\n");
     // No real newline introduced into the format string
     expect(args?.command).toBe('printf "Usage:\\n    %s [opts]\\n" "$0" > /tmp/help.txt');
+  });
+
+  it("preserves quoted consecutive escapes after a repaired code block in the same argument", async () => {
+    // A single code-block fingerprint earlier in the argument must not
+    // enable decoding of intentional consecutive escapes (\\n\\n) that
+    // later appear inside a Python string literal (ClawSweeper P1 #110823).
+    const baseFn: FakeStreamFn = () =>
+      createFakeStream({
+        events: [],
+        resultMessage: {
+          content: [
+            {
+              type: "toolCall",
+              id: "tc-1",
+              name: "write",
+              arguments: {
+                path: "test.py",
+                content:
+                  'class Foo:\\n\\tdef bar():\\n\\t\\tpass\\n\\ndef baz():\\n\\treturn "Usage:\\n\\n    help"',
+              },
+            },
+          ],
+        },
+      });
+
+    const wrapped = wrapStreamResultRepairDoubleEscapedCodeStrings(baseFn as never);
+    const stream = await Promise.resolve(wrapped({} as never, {} as never, {} as never));
+    const message = (await stream.result()) as {
+      content: Array<{ arguments?: { content?: string } }>;
+    };
+
+    const content = message.content[0]?.arguments?.content;
+    // The leading code block is repaired (structural \n\t).
+    expect(content).toContain("class Foo:\n\tdef bar()");
+    expect(content).toContain("\n\t\tpass");
+    // Intentional consecutive escapes inside the string literal survive.
+    expect(content).toContain('"Usage:\\n\\n    help"');
+    expect(content).not.toContain('"Usage:\n\n    help"');
+  });
+
+  it("still repairs consecutive escapes outside quotes after a repaired block", async () => {
+    // Guard against over-correcting the P1 fix: quoted-literal preservation
+    // must not stop the chain pass from repairing structural consecutive
+    // escapes that are genuinely outside any string literal.
+    const baseFn: FakeStreamFn = () =>
+      createFakeStream({
+        events: [],
+        resultMessage: {
+          content: [
+            {
+              type: "toolCall",
+              id: "tc-1",
+              name: "write",
+              arguments: {
+                path: "test.py",
+                content:
+                  "class Foo:\\n\\tdef bar():\\n\\t\\tpass\\n\\ndef baz():\\n\\treturn 42\\n\\n\\tdef qux():\\n\\t\\treturn 7",
+              },
+            },
+          ],
+        },
+      });
+
+    const wrapped = wrapStreamResultRepairDoubleEscapedCodeStrings(baseFn as never);
+    const stream = await Promise.resolve(wrapped({} as never, {} as never, {} as never));
+    const message = (await stream.result()) as {
+      content: Array<{ arguments?: { content?: string } }>;
+    };
+
+    const content = message.content[0]?.arguments?.content;
+    expect(content).toContain("class Foo:\n\tdef bar()");
+    // `return 42\n\n\t` chain: the `\n\n` blank line between methods plus
+    // the following `\t` indentation. All three are outside any string
+    // literal and must become real newlines/tab — the quote guard must
+    // not over-correct and stop structural chain repairs.
+    expect(content).toContain("return 42\n\n\tdef qux()");
+  });
+});
+
+describe("double-escape repair over a real HTTP SSE transport", () => {
+  // Live-loopback proof for the P1 fix (#110823): stream a double-escaped
+  // tool-call argument through a real HTTP server and decode it with the
+  // production wrapper, mirroring how the embedded runner consumes a model
+  // stream (see installEmbeddedAttemptStreamGuards in attempt-stream.ts).
+  // The model emitted literal backslash-n, so the JSON payload carries
+  // escaped backslashes that JSON.parse turns back into literal `\n`.
+  it("preserves quoted consecutive escapes and repairs structural ones end-to-end", async () => {
+    const content =
+      'class Foo:\\n\\tdef bar():\\n\\t\\tpass\\n\\ndef baz():\\n\\treturn "Usage:\\n\\n    help"';
+    const argumentsJson = JSON.stringify({ path: "test.py", content });
+    const splitAt = Math.ceil(argumentsJson.length / 2);
+    const chunkA = argumentsJson.slice(0, splitAt);
+    const chunkB = argumentsJson.slice(splitAt);
+
+    const server: Server = createServer((_req, res) => {
+      res.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      });
+      for (const chunk of [chunkA, chunkB]) {
+        const event = {
+          id: "chatcmpl-loopback",
+          object: "chat.completion.chunk",
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  { index: 0, id: "tc-1", function: { name: "write", arguments: chunk } },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        };
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+      }
+      res.write("data: [DONE]\n\n");
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+
+    const streamFn: FakeStreamFn = () => {
+      let accumulated = "";
+      return {
+        async result() {
+          const args = await new Promise<string>((resolve, reject) => {
+            const httpReq = httpRequest(`http://127.0.0.1:${port}/v1/chat/completions`);
+            httpReq.on("response", (res) => {
+              let buffer = "";
+              res.setEncoding("utf8");
+              res.on("data", (data: string) => {
+                buffer += data;
+                for (;;) {
+                  const nl = buffer.indexOf("\n");
+                  if (nl === -1) {
+                    break;
+                  }
+                  const line = buffer.slice(0, nl).trim();
+                  buffer = buffer.slice(nl + 1);
+                  if (!line.startsWith("data: ")) {
+                    continue;
+                  }
+                  const payload = line.slice(6);
+                  if (payload === "[DONE]") {
+                    resolve(accumulated);
+                    return;
+                  }
+                  const event = JSON.parse(payload) as {
+                    choices: Array<{
+                      delta: {
+                        tool_calls?: Array<{ function: { arguments?: string } }>;
+                      };
+                    }>;
+                  };
+                  const delta = event.choices[0]?.delta?.tool_calls?.[0]?.function?.arguments;
+                  if (typeof delta === "string") {
+                    accumulated += delta;
+                  }
+                }
+              });
+              res.on("error", reject);
+            });
+            httpReq.on("error", reject);
+            httpReq.end();
+          });
+          return {
+            content: [
+              {
+                type: "toolCall",
+                id: "tc-1",
+                name: "write",
+                arguments: JSON.parse(args) as Record<string, unknown>,
+              },
+            ],
+          };
+        },
+        [Symbol.asyncIterator]() {
+          return (async function* () {})();
+        },
+      };
+    };
+
+    try {
+      const wrapped = wrapStreamResultRepairDoubleEscapedCodeStrings(streamFn as never);
+      const stream = await Promise.resolve(wrapped({} as never, {} as never, {} as never));
+      const message = (await stream.result()) as {
+        content: Array<{ arguments?: { content?: string } }>;
+      };
+      const repaired = message.content[0]?.arguments?.content;
+      // Structural escapes outside quotes were repaired through the live
+      // transport + JSON decode + production repair chain.
+      expect(repaired).toContain("class Foo:\n\tdef bar()");
+      expect(repaired).toContain("\n\t\tpass");
+      // Intentional consecutive escapes inside the string literal survived
+      // the same end-to-end pass.
+      expect(repaired).toContain('"Usage:\\n\\n    help"');
+      expect(repaired).not.toContain('"Usage:\n\n    help"');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
