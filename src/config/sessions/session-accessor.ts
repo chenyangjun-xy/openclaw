@@ -7,7 +7,6 @@
 export * from "./session-history.js";
 export type {
   BranchSessionFromCompactionCheckpointParams,
-  CanonicalizeSessionEntryAliasesResult,
   DeleteSessionEntryLifecycleParams,
   DeleteSessionEntryLifecycleResult,
   DeletedAgentSessionEntryPurgeParams,
@@ -120,9 +119,19 @@ export type {
   UpdateSessionLastRouteParams,
 } from "./session-accessor.entry-mutation.js";
 export {
+  countSessionEntryRowsReadOnly,
+  copySessionOwnedStateForCanonicalRepair,
+  listSessionGenerationIdsForCanonicalRepair,
   clearPluginOwnedSessionState,
+  listSessionChildEntriesReadOnly,
   listSessionEntries,
+  listSessionEntriesReadOnly,
+  listSessionEntriesForCanonicalRepair,
+  rehomeSessionDeliveryReferencesForCanonicalRepair,
+  rehomeSessionDeliveryReferencesForCanonicalRepairBatch,
+  listSessionEntryKeysReadOnly,
   loadExactSessionEntry,
+  loadExactSessionEntryReadOnly,
   loadSessionEntry,
   loadSessionEntryReadOnly,
   openSessionEntryReadView,
@@ -134,11 +143,11 @@ export {
   replaceSessionEntrySync,
   resolveSessionEntryAccessTarget,
   resolveSessionEntryCandidateTarget,
+  resolveSessionEntrySelection,
   updateResolvedSessionEntry,
   upsertSessionEntry,
 } from "./session-accessor.entry.js";
 export {
-  canonicalizeSessionEntryAliases,
   createSessionEntryWithTranscript,
   forkSessionEntryFromParentTarget,
   forkSessionFromParentTranscript,
@@ -159,7 +168,6 @@ export {
   cleanupSessionLifecycleArtifacts,
   deleteSessionEntryLifecycle,
   preserveTemporarySessionMapping,
-  previewSessionDiskBudget,
   purgeDeletedAgentSessionEntries,
   resetSessionEntryLifecycle,
   restoreSessionFromCompactionCheckpoint,
@@ -169,6 +177,7 @@ export {
 export {
   forkSessionAtMessage,
   listSessionBranches,
+  resolveSessionTranscriptActiveLeafEntryId,
   rewindSessionToMessage,
   switchSessionBranch,
 } from "./session-accessor.message-cut.js";
@@ -176,6 +185,7 @@ export {
   commitReplySessionInitialization,
   loadReplySessionInitializationSnapshot,
   persistSessionResetLifecycle,
+  SessionInitializationAgentScopeMismatchError,
 } from "./session-accessor.reset.js";
 export {
   appendTranscriptEvent,
@@ -186,6 +196,8 @@ export {
   loadTranscriptEventRowsAfterSeqSync,
   loadTranscriptEvents,
   loadTranscriptEventsSync,
+  loadTranscriptHeaderSync,
+  loadTranscriptTailEventsSync,
   preflightSessionTranscriptForManualCompact,
   publishTranscriptUpdate,
   readLatestTranscriptAssistantText,
@@ -194,15 +206,23 @@ export {
   readTranscriptStatsSync,
   replaceTranscriptEvents,
   replaceTranscriptEventsSync,
+  rewriteTranscriptEventRowsExact,
   resolveTranscriptSessionKeyBySessionId,
   trimSessionTranscriptForManualCompact,
   withTranscriptWriteLock,
   withTranscriptWriteTransaction,
 } from "./session-accessor.transcript.js";
-export { persistSessionTranscriptTurn } from "./session-accessor.transcript-turn.js";
+export {
+  appendTranscriptMessages,
+  persistSessionTranscriptTurn,
+} from "./session-accessor.transcript-turn.js";
 export {
   isSessionTranscriptProjectionUnavailableError,
+  readRecentSessionTranscriptActiveEvents,
+  readSessionTranscriptActiveStats,
+  readSessionTranscriptBoundedMessageTailPage,
   readRecentSessionTranscriptMessageEvents,
+  readSessionTranscriptActiveLeafEvents,
   readSessionTranscriptMessageAnchorPage,
   readSessionTranscriptMessageEventById,
   readSessionTranscriptMessageEventCount,
@@ -210,13 +230,20 @@ export {
   readSessionTranscriptMessageEvents,
   readSessionTranscriptVisibleMessageDelta,
   SessionTranscriptProjectionUnavailableError,
+  waitForSessionTranscriptProjection,
 } from "./session-accessor.sqlite-active-events.js";
 export type {
+  SessionTranscriptBoundedMessageTailPage,
   SessionTranscriptMessageAnchorPage,
   SessionTranscriptMessageEvent,
   SessionTranscriptMessageEventPage,
 } from "./session-accessor.sqlite-active-events.js";
 export {
+  readSessionTranscriptWatermark,
+  type SessionTranscriptWatermark,
+} from "./session-accessor.sqlite-transcript-watermark.js";
+export {
+  resolveConcreteSessionStorePath,
   resolveSessionTranscriptReadTarget,
   resolveSessionTranscriptRuntimeReadTarget,
   resolveSessionTranscriptRuntimeTarget,
