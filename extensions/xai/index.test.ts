@@ -527,6 +527,16 @@ describe("xai provider plugin", () => {
     ).toBe("billing");
     expect(
       provider.classifyFailoverReason?.({
+        errorMessage: "You have run out of credits",
+      }),
+    ).toBe("billing");
+    expect(
+      provider.classifyFailoverReason?.({
+        errorMessage: "You need a Grok subscription to access this model",
+      }),
+    ).toBe("billing");
+    expect(
+      provider.classifyFailoverReason?.({
         errorMessage:
           '429 {"code":"Some resource has been exhausted","error":"Rate limit exceeded"}',
       }),
