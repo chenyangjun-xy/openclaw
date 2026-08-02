@@ -249,8 +249,9 @@ async function downloadGeneratedVideoFromUri(params: {
         try {
           assertProviderBinaryResponseContent(response, "Google generated video download", "video");
         } catch (error) {
-          // A rejected binary response still owns a live socket until its unread body is canceled.
-          await response.body?.cancel().catch(() => undefined);
+          // A debug-capture clone can keep the tee open, so waiting for cancel
+          // would hang before the malformed-body error can be thrown.
+          void response.body?.cancel().catch(() => undefined);
           throw error;
         }
         const buffer = await readResponseWithLimit(response, params.maxBytes, {
