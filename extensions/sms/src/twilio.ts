@@ -313,7 +313,15 @@ async function readTwilioApiResponseText(response: Response): Promise<string> {
     onOverflow: ({ size, maxBytes: limit }) =>
       new Error(`Twilio SMS API response body too large: ${size} bytes (limit: ${limit} bytes)`),
   });
-  return new TextDecoder().decode(body);
+  // Fatal decode: otherwise a success body with invalid UTF-8 gets the bad bytes
+  // silently replaced by U+FFFD, and a Message/PhoneNumber SID extracted from it
+  // points later status or reply lookups at a corrupted identifier (same invariant
+  // the voice-call providers repaired in #114267).
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(body);
+  } catch (cause) {
+    throw new Error("Twilio SMS API success response contained invalid UTF-8.", { cause });
+  }
 }
 
 function normalizeRequestHeaders(headers: HeadersInit | undefined): Record<string, string> {

@@ -96,6 +96,27 @@ function cancelTrackedTextResponse(
   };
 }
 
+function invalidUtf8Response(text: string, init?: ResponseInit): Response {
+  const body = Buffer.from(text, "utf8");
+  const sidValue = body.indexOf(Buffer.from("SM456", "utf8"));
+  if (sidValue === -1) {
+    throw new Error("Test body must contain the SID value to corrupt.");
+  }
+  // Corrupt a SID byte into a lone UTF-8 continuation byte: the JSON stays
+  // well-formed, but a non-fatal decode would emit U+FFFD and let a corrupted
+  // Message SID flow into later status/reply lookups.
+  body[sidValue + 2] = 0x80;
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(body));
+        controller.close();
+      },
+    }),
+    init,
+  );
+}
+
 describe("Twilio SMS helpers", () => {
   afterEach(() => {
     fetchWithSsrFGuardMock.mockReset();
@@ -581,6 +602,24 @@ describe("Twilio SMS helpers", () => {
         fetchImpl,
       }),
     ).rejects.toThrow("Twilio SMS send returned malformed JSON.");
+  });
+
+  it("rejects Twilio success bodies that contain invalid UTF-8", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      invalidUtf8Response(JSON.stringify({ sid: "SM456", to: "+15551234567", status: "queued" }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await expect(
+      sendSmsViaTwilio({
+        account: createAccount(),
+        to: "+15551234567",
+        text: "hello",
+        fetchImpl,
+      }),
+    ).rejects.toThrow("Twilio SMS API success response contained invalid UTF-8.");
   });
 
   it("releases guarded Twilio egress on malformed successful send responses", async () => {
