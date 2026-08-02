@@ -193,4 +193,41 @@ describe("remote model catalog refresh", () => {
       }),
     ).resolves.toMatchObject({ status: "error" });
   });
+
+  it("rejects a bundle whose model id contains invalid UTF-8 bytes", async () => {
+    const valid = new TextEncoder().encode(JSON.stringify(bundle));
+    const needle = new TextEncoder().encode("claude-test");
+    let index = -1;
+    for (let i = 0; i < valid.length - needle.length; i += 1) {
+      let match = true;
+      for (let j = 0; j < needle.length; j += 1) {
+        if (valid[i + j] !== needle[j]) {
+          match = false;
+          break;
+        }
+      }
+      if (match) {
+        index = i;
+        break;
+      }
+    }
+    expect(index).toBeGreaterThan(0);
+    const mid = index + 6; // inside "claude-test", between 's' and 't'
+    const corrupt = new Uint8Array(valid.length + 1);
+    corrupt.set(valid.subarray(0, mid));
+    corrupt[mid] = 0xff;
+    corrupt.set(valid.subarray(mid), mid + 1);
+
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(corrupt, { status: 200 }));
+    await expect(
+      refreshRemoteModelCatalog({
+        config: {},
+        fetchImpl,
+        databaseOptions: options(),
+        force: true,
+      }),
+    ).resolves.toMatchObject({ status: "error" });
+    const persisted = readRemoteModelCatalog(options())?.bundle_json;
+    expect(persisted).toBeUndefined();
+  });
 });
