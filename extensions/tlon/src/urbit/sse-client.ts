@@ -313,12 +313,24 @@ export class UrbitSSEClient {
       buffer += text;
       bufferBytes = nextBytes;
     };
+    const processEventSuspended = async (eventData: string) => {
+      // Handler work is legitimate processing time, not stream idleness. Disarm
+      // so a handler that runs past stallTimeoutMs cannot abort a healthy stream
+      // (the ack only lands after the handler returns, so an abort would replay
+      // or disrupt delivery); rearm resets the idle clock before the read.
+      stallWatchdog.disarm();
+      try {
+        await this.processEvent(eventData);
+      } finally {
+        stallWatchdog.arm();
+      }
+    };
     const consumeText = async (text: string) => {
       let offset = 0;
       if (pendingDelimiterNewline && text.length > 0) {
         pendingDelimiterNewline = false;
         if (text.startsWith("\n")) {
-          await this.processEvent(buffer);
+          await processEventSuspended(buffer);
           buffer = "";
           bufferBytes = 0;
           offset = 1;
@@ -337,7 +349,7 @@ export class UrbitSSEClient {
           return;
         }
         appendPending(text.slice(offset, eventEnd));
-        await this.processEvent(buffer);
+        await processEventSuspended(buffer);
         buffer = "";
         bufferBytes = 0;
         offset = eventEnd + 2;

@@ -119,4 +119,85 @@ describe("UrbitSSEClient SSE stall watchdog proof", () => {
     });
     expect(unhandledRejections).toStrictEqual([]);
   });
+
+  it("does not abort a healthy stream while a handler runs longer than stallTimeoutMs", async () => {
+    let streamGets = 0;
+    const server = createServer((req, res) => {
+      const method = req.method ?? "GET";
+      const url = req.url ?? "/";
+      if (method === "PUT" || method === "DELETE") {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      if (method === "GET" && url.startsWith("/~/channel/")) {
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        streamGets += 1;
+        // One real event, then keep heartbeating so the connection stays alive.
+        res.write('data: {"id":1,"json":{"event":true}}\n\n');
+        const heartbeat = setInterval(() => {
+          try {
+            res.write(":\n\n");
+          } catch {
+            clearInterval(heartbeat);
+          }
+        }, 50);
+        res.on("close", () => clearInterval(heartbeat));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    runningServers.push(server);
+    const address = server.address() as AddressInfo;
+
+    const log: string[] = [];
+    const errors: string[] = [];
+    const client = new UrbitSSEClient(`http://127.0.0.1:${address.port}`, "urbauth-~zod=proof", {
+      ship: "zod",
+      stallTimeoutMs: STALL_TIMEOUT_MS,
+      reconnectDelay: 1,
+      maxReconnectDelay: 1,
+      ssrfPolicy: { allowPrivateNetwork: true },
+      lookupFn: lookupLoopback,
+      logger: { log: (message) => log.push(message), error: (message) => errors.push(message) },
+    });
+    // A handler that runs well past stallTimeoutMs must not count as a stall.
+    const handler = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    });
+    await client.subscribe({ app: "chat", path: "/dm/~zod", event: handler });
+
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      await client.connect();
+
+      // The event is dispatched (handler returns after ~500ms > 300ms timeout).
+      await vi.waitFor(() => expect(handler).toHaveBeenCalledWith({ event: true }), {
+        timeout: 5_000,
+      });
+      // Wait past the stall timeout: without the suspend, the watchdog would
+      // abort during the slow handler and this client would reconnect.
+      await new Promise((resolve) => setTimeout(resolve, STALL_TIMEOUT_MS * 2));
+      expect(streamGets).toBe(1);
+      expect(errors.some((message) => message.includes("Stream stalled"))).toBe(false);
+
+      await client.close();
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    expect(unhandledRejections).toStrictEqual([]);
+  });
 });
