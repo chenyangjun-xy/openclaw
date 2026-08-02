@@ -194,40 +194,33 @@ describe("remote model catalog refresh", () => {
     ).resolves.toMatchObject({ status: "error" });
   });
 
-  it("rejects a bundle whose model id contains invalid UTF-8 bytes", async () => {
-    const valid = new TextEncoder().encode(JSON.stringify(bundle));
-    const needle = new TextEncoder().encode("claude-test");
-    let index = -1;
-    for (let i = 0; i < valid.length - needle.length; i += 1) {
-      let match = true;
-      for (let j = 0; j < needle.length; j += 1) {
-        if (valid[i + j] !== needle[j]) {
-          match = false;
-          break;
-        }
-      }
-      if (match) {
-        index = i;
-        break;
-      }
-    }
-    expect(index).toBeGreaterThan(0);
-    const mid = index + 6; // inside "claude-test", between 's' and 't'
-    const corrupt = new Uint8Array(valid.length + 1);
-    corrupt.set(valid.subarray(0, mid));
-    corrupt[mid] = 0xff;
-    corrupt.set(valid.subarray(mid), mid + 1);
+  it("preserves the previous catalog when a newer bundle contains invalid UTF-8", async () => {
+    const databaseOptions = options();
+    const previous = {
+      bundle_json: JSON.stringify(bundle),
+      generated_at: bundle.generatedAt,
+      min_version: bundle.minVersion,
+      source_url: DEFAULT_REMOTE_MODEL_CATALOG_URL,
+      etag: '"previous"',
+      last_modified: "Wed, 23 Jul 2025 00:00:00 GMT",
+      checked_at: 10_000,
+    };
+    writeRemoteModelCatalog(previous, databaseOptions);
+
+    const corrupt = Buffer.from(JSON.stringify({ ...bundle, generatedAt: bundle.generatedAt + 1 }));
+    const modelIdOffset = corrupt.indexOf("claude-test");
+    expect(modelIdOffset).toBeGreaterThanOrEqual(0);
+    corrupt[modelIdOffset + "claude-".length] = 0xff;
 
     const fetchImpl = vi.fn<typeof fetch>(async () => new Response(corrupt, { status: 200 }));
     await expect(
       refreshRemoteModelCatalog({
         config: {},
         fetchImpl,
-        databaseOptions: options(),
+        databaseOptions,
         force: true,
       }),
     ).resolves.toMatchObject({ status: "error" });
-    const persisted = readRemoteModelCatalog(options())?.bundle_json;
-    expect(persisted).toBeUndefined();
+    expect(readRemoteModelCatalog(databaseOptions)).toMatchObject(previous);
   });
 });
