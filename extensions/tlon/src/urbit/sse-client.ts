@@ -1,6 +1,7 @@
 // Tlon plugin module implements sse client behavior.
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
+import { createArmableStallWatchdog } from "openclaw/plugin-sdk/channel-outbound";
 import { resolveTimerTimeoutMs } from "openclaw/plugin-sdk/number-runtime";
 import { readResponseTextLimited } from "openclaw/plugin-sdk/provider-http";
 import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
@@ -25,10 +26,14 @@ type UrbitSseOptions = {
   maxReconnectAttempts?: number;
   reconnectDelay?: number;
   maxReconnectDelay?: number;
+  stallTimeoutMs?: number;
   logger?: UrbitSseLogger;
 };
 
 const MAX_SSE_PAYLOAD_BYTES = 16 * 1024 * 1024;
+// Eyre heartbeats the SSE channel every ~20s. Requiring data within 60s recovers
+// a silent drop (TCP open, no bytes) instead of hanging the stream forever.
+const SSE_STALL_TIMEOUT_MS = 60_000;
 
 function parseUrbitSsePayload(data: string): { id?: number; json?: unknown; response?: string } {
   if (Buffer.byteLength(data, "utf8") > MAX_SSE_PAYLOAD_BYTES) {
@@ -79,6 +84,7 @@ export class UrbitSSEClient {
   maxReconnectAttempts: number;
   reconnectDelay: number;
   maxReconnectDelay: number;
+  stallTimeoutMs: number;
   isConnected = false;
   logger: UrbitSseLogger;
   ssrfPolicy?: SsrFPolicy;
@@ -106,6 +112,7 @@ export class UrbitSSEClient {
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? 10;
     this.reconnectDelay = resolveTimerTimeoutMs(options.reconnectDelay, 1000);
     this.maxReconnectDelay = resolveTimerTimeoutMs(options.maxReconnectDelay, 30000);
+    this.stallTimeoutMs = resolveTimerTimeoutMs(options.stallTimeoutMs, SSE_STALL_TIMEOUT_MS);
     this.logger = options.logger ?? {};
     this.ssrfPolicy = options.ssrfPolicy;
     this.lookupFn = options.lookupFn;
@@ -267,6 +274,26 @@ export class UrbitSSEClient {
     let buffer = "";
     let bufferBytes = 0;
     let pendingDelimiterNewline = false;
+    // Eyre can keep the TCP connection open while silently stopping data. A
+    // watchdog turns that silent wait into the normal reconnect path.
+    let stalled = false;
+    const stallWatchdog = createArmableStallWatchdog({
+      label: "tlon-sse",
+      timeoutMs: this.stallTimeoutMs,
+      abortSignal: this.reconnectAbortController.signal,
+      onTimeout: () => {
+        if (this.aborted) {
+          return;
+        }
+        stalled = true;
+        this.logger.error?.(
+          `[SSE] Stream stalled (no data for ${this.stallTimeoutMs}ms); forcing reconnect`,
+        );
+        // Breaking the fetch aborts the for-await so the finally-block reconnects.
+        this.streamController?.abort();
+      },
+    });
+    stallWatchdog.arm();
 
     const appendPending = (text: string) => {
       const previousCodeUnit = buffer.charCodeAt(buffer.length - 1);
@@ -322,6 +349,7 @@ export class UrbitSSEClient {
         if (this.aborted) {
           break;
         }
+        stallWatchdog.touch();
         if (typeof chunk === "string") {
           await consumeText(decoder.decode());
           await consumeText(chunk);
@@ -330,7 +358,15 @@ export class UrbitSSEClient {
         }
       }
       await consumeText(decoder.decode());
+    } catch (error) {
+      if (stalled) {
+        // The watchdog aborted the read; the finally-block reconnects. Swallow
+        // the AbortError so a recovery it already explained is not re-reported.
+        return;
+      }
+      throw error;
     } finally {
+      stallWatchdog.stop();
       if (this.streamRelease) {
         const release = this.streamRelease;
         this.streamRelease = null;
@@ -339,7 +375,11 @@ export class UrbitSSEClient {
       this.streamController = null;
       if (!this.aborted && this.autoReconnect) {
         this.isConnected = false;
-        this.logger.log?.("[SSE] Stream ended, attempting reconnection...");
+        if (stalled) {
+          this.logger.log?.("[SSE] Stream stalled, attempting reconnection...");
+        } else {
+          this.logger.log?.("[SSE] Stream ended, attempting reconnection...");
+        }
         await this.attemptReconnect();
       }
     }
