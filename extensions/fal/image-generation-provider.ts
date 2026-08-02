@@ -13,6 +13,7 @@ import { isProviderApiKeyConfigured } from "openclaw/plugin-sdk/provider-auth";
 import {
   assertOkOrThrowHttpError,
   assertOkOrThrowProviderError,
+  assertProviderBinaryResponseContent,
   createProviderOperationDeadline,
   readProviderJsonResponse,
   resolveProviderOperationTimeoutMs,
@@ -620,12 +621,24 @@ async function fetchImageBuffer(
   });
   try {
     await assertOkOrThrowProviderError(response, "fal image download failed");
+    try {
+      assertProviderBinaryResponseContent(response, "fal image download", "image");
+    } catch (error) {
+      // A rejected binary response still owns a live socket until its unread body is canceled.
+      await response.body?.cancel().catch(() => undefined);
+      throw error;
+    }
     const mimeType = response.headers.get("content-type")?.trim() || "image/png";
+    const buffer = await readResponseWithLimit(response, maxBytes, {
+      onOverflow: ({ maxBytes: maxBytesLocal }) =>
+        new Error(`fal generated image download exceeds ${maxBytesLocal} bytes`),
+    });
+    if (buffer.byteLength === 0) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error("fal image download: malformed image response");
+    }
     return {
-      buffer: await readResponseWithLimit(response, maxBytes, {
-        onOverflow: ({ maxBytes: maxBytesLocal }) =>
-          new Error(`fal generated image download exceeds ${maxBytesLocal} bytes`),
-      }),
+      buffer,
       mimeType,
     };
   } finally {

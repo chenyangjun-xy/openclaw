@@ -285,6 +285,39 @@ describe("fal image-generation provider", () => {
     });
   });
 
+  it.each([
+    { name: "JSON error", contentType: "application/json", body: '{"error":"denied"}' },
+    { name: "problem JSON", contentType: "application/problem+json", body: '{"title":"denied"}' },
+    { name: "HTML", contentType: "text/html; charset=utf-8", body: "<html>sign in</html>" },
+    { name: "empty image", contentType: "image/png", body: "" },
+  ])("rejects a successful $name response as generated image", async ({ contentType, body }) => {
+    mockFalImageProviderRuntime();
+    fetchWithSsrFGuardMock
+      .mockResolvedValueOnce({
+        response: Response.json({
+          images: [{ url: "https://v3.fal.media/files/example/generated.png" }],
+        }),
+        release: vi.fn(async () => {}),
+      })
+      .mockResolvedValueOnce({
+        response: new Response(Buffer.from(body), {
+          status: 200,
+          headers: { "content-type": contentType },
+        }),
+        release: vi.fn(async () => {}),
+      });
+
+    const provider = buildFalImageGenerationProvider();
+    await expect(
+      provider.generateImage({
+        provider: "fal",
+        model: "fal-ai/flux/dev",
+        prompt: "draw a cat",
+        cfg: {},
+      }),
+    ).rejects.toThrow("fal image download: malformed image response");
+  });
+
   it("shares an explicit operation deadline across generated image downloads", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-10T00:00:00Z"));

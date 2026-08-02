@@ -3,6 +3,7 @@ import { resolveGeneratedMediaMaxBytes } from "openclaw/plugin-sdk/media-generat
 import { canonicalizeBase64 } from "openclaw/plugin-sdk/media-runtime";
 import { resolveApiKeyForProvider } from "openclaw/plugin-sdk/provider-auth-runtime";
 import {
+  assertProviderBinaryResponseContent,
   createProviderOperationDeadline,
   executeProviderOperationWithRetry,
   resolveProviderOperationTimeoutMs,
@@ -245,6 +246,13 @@ async function downloadGeneratedVideoFromUri(params: {
             `Failed to download Google generated video: ${response.status} ${response.statusText}`,
           );
         }
+        try {
+          assertProviderBinaryResponseContent(response, "Google generated video download", "video");
+        } catch (error) {
+          // A rejected binary response still owns a live socket until its unread body is canceled.
+          await response.body?.cancel().catch(() => undefined);
+          throw error;
+        }
         const buffer = await readResponseWithLimit(response, params.maxBytes, {
           chunkTimeoutMs: params.timeoutMs,
           onOverflow: ({ maxBytes }) =>
@@ -252,6 +260,10 @@ async function downloadGeneratedVideoFromUri(params: {
           onIdleTimeout: ({ chunkTimeoutMs }) =>
             new Error(`Google generated video download stalled after ${chunkTimeoutMs}ms`),
         });
+        if (buffer.byteLength === 0) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new Error("Google generated video download: malformed video response");
+        }
         return {
           buffer,
           mimeType:
