@@ -168,7 +168,9 @@ describe("UrbitSSEClient SSE stall watchdog proof", () => {
     });
     // A handler that runs well past stallTimeoutMs must not count as a stall.
     const handler = vi.fn(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await new Promise<void>((resolve) => {
+        setTimeout(() => resolve(), 500);
+      });
     });
     await client.subscribe({ app: "chat", path: "/dm/~zod", event: handler });
 
@@ -187,7 +189,9 @@ describe("UrbitSSEClient SSE stall watchdog proof", () => {
       });
       // Wait past the stall timeout: without the suspend, the watchdog would
       // abort during the slow handler and this client would reconnect.
-      await new Promise((resolve) => setTimeout(resolve, STALL_TIMEOUT_MS * 2));
+      await new Promise<void>((resolve) => {
+        setTimeout(() => resolve(), STALL_TIMEOUT_MS * 2);
+      });
       expect(streamGets).toBe(1);
       expect(errors.some((message) => message.includes("Stream stalled"))).toBe(false);
 
