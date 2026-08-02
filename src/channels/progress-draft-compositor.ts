@@ -50,7 +50,13 @@ export function createChannelProgressReceiptTracker(params?: { now?: () => numbe
   let commentaryNotes = 0;
   let reasoningOpen = false;
   const seenCommentaryIds = new Set<string>();
-  const seenCommentaryTexts = new Set<string>();
+  // One note is reported twice, with and without its item id, in either order.
+  // An id-less report is the duplicate of the most recent id-ful report with
+  // the same text (and vice versa); a match consumes its candidate so a second
+  // distinct item that shares the text still counts on its own.
+  let lastCommentaryText = "";
+  let lastIdFullCommentaryText = "";
+  let lastIdLessCommentaryText = "";
 
   const closeReasoning = () => {
     if (!reasoningOpen) {
@@ -67,7 +73,9 @@ export function createChannelProgressReceiptTracker(params?: { now?: () => numbe
     commentaryNotes = 0;
     reasoningOpen = false;
     seenCommentaryIds.clear();
-    seenCommentaryTexts.clear();
+    lastCommentaryText = "";
+    lastIdFullCommentaryText = "";
+    lastIdLessCommentaryText = "";
   };
 
   return {
@@ -86,17 +94,30 @@ export function createChannelProgressReceiptTracker(params?: { now?: () => numbe
       if (!trimmed) {
         return;
       }
-      // One note is reported twice, with and without its item id, in either
-      // order. Counting on first sight of either fact keeps the total honest.
-      const seen =
-        seenCommentaryTexts.has(trimmed) || (itemId ? seenCommentaryIds.has(itemId) : false);
-      seenCommentaryTexts.add(trimmed);
       if (itemId) {
-        seenCommentaryIds.add(itemId);
+        // Id-less half arrived first: same note, so do not double count. The
+        // candidate is consumed so a second same-text item counts on its id.
+        if (trimmed === lastIdLessCommentaryText) {
+          lastIdLessCommentaryText = "";
+          seenCommentaryIds.add(itemId);
+          return;
+        }
+        if (!seenCommentaryIds.has(itemId)) {
+          seenCommentaryIds.add(itemId);
+          commentaryNotes += 1;
+          lastIdFullCommentaryText = trimmed;
+        }
+        return;
       }
-      if (!seen) {
-        commentaryNotes += 1;
+      // Id-ful half arrived first: this is its duplicate, not a new note. An
+      // id-less report only counts when it is neither the last id-ful
+      // duplicate nor a repeated id-less snapshot.
+      if (trimmed === lastIdFullCommentaryText || trimmed === lastCommentaryText) {
+        return;
       }
+      lastCommentaryText = trimmed;
+      lastIdLessCommentaryText = trimmed;
+      commentaryNotes += 1;
     },
     reset,
     buildSummaryLine() {
@@ -182,10 +203,13 @@ export function createChannelProgressDraftCompositor(params: {
   // place instead of appending one line per growing prefix.
   let lastIdLessCommentaryId: string | undefined;
   let lastIdLessCommentaryBare = "";
-  // Transports report one commentary item twice: once carrying the provider's
-  // item id and once without it. Keying by text lets both resolve to the same
-  // line instead of rendering the note twice.
-  const commentaryLineIdByBareText = new Map<string, string>();
+  // Transports report one commentary item twice, with and without its item id,
+  // in either order. An id-less report resolves to the most recent unmatched
+  // id-ful report with the same text (and an id-ful report resolves back to an
+  // unmatched id-less report); a match consumes its candidate so a second
+  // distinct item that shares the text opens its own line.
+  let lastIdFullCommentaryBare = "";
+  let lastIdFullCommentaryLineId: string | undefined;
   // Model preambles and narration share the status slot while tool lines keep
   // accumulating underneath for turns where neither source is available.
   let preambleText = "";
@@ -260,7 +284,8 @@ export function createChannelProgressDraftCompositor(params: {
     lastReasoningLine = undefined;
     lastIdLessCommentaryId = undefined;
     lastIdLessCommentaryBare = "";
-    commentaryLineIdByBareText.clear();
+    lastIdFullCommentaryBare = "";
+    lastIdFullCommentaryLineId = undefined;
     preambleText = "";
     preambleItemId = undefined;
     preambleAt = undefined;
@@ -322,28 +347,41 @@ export function createChannelProgressDraftCompositor(params: {
    * providers stream cumulative snapshots ("Checking" → "Checking the
    * workspace"), so a snapshot that continues the open line reuses its id and
    * updates in place; anything else starts a new line.
+   *
+   * Transports also report one item twice, with and without its id. A report
+   * first resolves against the most recent unmatched report of the other kind
+   * with the same text, so the duplicate lands on the same line in either
+   * arrival order; a match consumes its candidate, so a second distinct item
+   * that happens to share the text opens its own line.
    */
   const resolveCommentaryLineId = (commentary: {
     itemId?: string;
     normalized: string;
     bareNormalized: string;
   }): string => {
-    // Text first, so the pair resolves to one line in either arrival order: the
-    // id-less report cannot know the item id, and the id-bearing one must not
-    // open a second line for a note already on the board.
-    const knownLineId = commentary.bareNormalized
-      ? commentaryLineIdByBareText.get(commentary.bareNormalized)
-      : undefined;
-    if (knownLineId) {
-      return knownLineId;
-    }
     if (commentary.itemId) {
+      // Id-less half arrived first; the id-ful half resolves back to its line.
+      if (
+        commentary.bareNormalized &&
+        commentary.bareNormalized === lastIdLessCommentaryBare &&
+        lastIdLessCommentaryId
+      ) {
+        return lastIdLessCommentaryId;
+      }
       return `commentary:${commentary.itemId}`;
     }
     if (!commentary.normalized) {
       // Sanitized to nothing (directive-only / NO_REPLY): no line to address, so
       // it cannot retract the open one. Only an explicit itemId clears a line.
       return "";
+    }
+    // Id-ful half arrived first; the id-less duplicate resolves to its line.
+    if (
+      commentary.bareNormalized &&
+      commentary.bareNormalized === lastIdFullCommentaryBare &&
+      lastIdFullCommentaryLineId
+    ) {
+      return lastIdFullCommentaryLineId;
     }
     const continuesOpenLine =
       Boolean(lastIdLessCommentaryBare) &&
@@ -731,12 +769,20 @@ export function createChannelProgressDraftCompositor(params: {
       lines = mergeChannelProgressDraftLine(lines, line, {
         maxLines: resolveChannelProgressDraftMaxLines(params.entry),
       });
-      if (!itemId) {
+      if (itemId) {
+        lastIdFullCommentaryBare = bareNormalized;
+        lastIdFullCommentaryLineId = lineId;
+        // An id-ful report that resolved to an open id-less line claims it, so
+        // a second same-text item cannot resolve back to this note's line.
+        if (lineId === lastIdLessCommentaryId) {
+          lastIdLessCommentaryId = undefined;
+          lastIdLessCommentaryBare = "";
+        }
+      } else if (lineId !== lastIdFullCommentaryLineId) {
+        // A genuinely new id-less line (not the duplicate of the last id-ful
+        // report) becomes the candidate an id-ful report can resolve back to.
         lastIdLessCommentaryId = lineId;
         lastIdLessCommentaryBare = bareNormalized;
-      }
-      if (bareNormalized) {
-        commentaryLineIdByBareText.set(bareNormalized, lineId);
       }
       const alreadyStarted = gate.hasStarted;
       await gate.startNow();

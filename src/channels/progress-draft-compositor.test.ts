@@ -40,6 +40,39 @@ describe("commentary reported twice", () => {
     expect(rendered.match(/Second step\./gu) ?? []).toHaveLength(1);
     expect(receipt.buildSummaryLine()).toContain("💬 2 notes");
   });
+
+  it("keeps two distinct same-text items as two lines and two notes", async () => {
+    const updates: string[] = [];
+    const compositor = createChannelProgressDraftCompositor({
+      entry: { streaming: { mode: "progress", progress: { commentary: true } } },
+      mode: "progress",
+      active: true,
+      seed: "",
+      update: (text) => {
+        updates.push(text);
+      },
+      now: () => 0,
+    });
+    const receipt = createChannelProgressReceiptTracker({ now: () => 0 });
+
+    // Two different provider items happen to carry the same text. Each is
+    // reported twice (id-ful plus its id-less duplicate), so the note text
+    // must not act as a global identity: each item keeps its own line and is
+    // counted once.
+    await compositor.pushCommentaryProgress("Done.", { itemId: "item-1" });
+    receipt.noteCommentary("item-1", "Done.");
+    await compositor.pushCommentaryProgress("Done.");
+    receipt.noteCommentary(undefined, "Done.");
+
+    await compositor.pushCommentaryProgress("Done.", { itemId: "item-2" });
+    receipt.noteCommentary("item-2", "Done.");
+    await compositor.pushCommentaryProgress("Done.");
+    receipt.noteCommentary(undefined, "Done.");
+
+    const rendered = updates.at(-1) ?? "";
+    expect(rendered.match(/Done\./gu) ?? []).toHaveLength(2);
+    expect(receipt.buildSummaryLine()).toContain("💬 2 notes");
+  });
 });
 
 describe("createChannelProgressDraftCompositor", () => {
