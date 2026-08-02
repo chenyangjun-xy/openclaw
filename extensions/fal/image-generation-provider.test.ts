@@ -291,14 +291,10 @@ describe("fal image-generation provider", () => {
     { name: "HTML", contentType: "text/html; charset=utf-8", body: "<html>sign in</html>" },
     { name: "empty image", contentType: "image/png", body: "" },
   ])("rejects a successful $name response as generated image", async ({ contentType, body }) => {
-    mockFalImageProviderRuntime();
     fetchWithSsrFGuardMock
-      .mockResolvedValueOnce({
-        response: Response.json({
-          images: [{ url: "https://v3.fal.media/files/example/generated.png" }],
-        }),
-        release: vi.fn(async () => {}),
-      })
+      .mockResolvedValueOnce(
+        releasedJson({ images: [{ url: "https://v3.fal.media/files/example/generated.png" }] }),
+      )
       .mockResolvedValueOnce({
         response: new Response(Buffer.from(body), {
           status: 200,
@@ -307,7 +303,6 @@ describe("fal image-generation provider", () => {
         release: vi.fn(async () => {}),
       });
 
-    const provider = buildFalImageGenerationProvider();
     await expect(
       provider.generateImage({
         provider: "fal",
