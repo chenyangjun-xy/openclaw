@@ -2785,6 +2785,110 @@ describe("compaction-safeguard double-compaction guard", () => {
     ).toBe(true);
   });
 
+  it("keeps the valid first-kept tail when fallback recovery reads a compaction boundary", async () => {
+    // ClawSweeper P1 (#115912): a compaction retains history starting at its
+    // firstKeptEntryId, which can precede the boundary entry itself. The strict
+    // post-boundary slice dropped that valid tail before the fallback summary.
+    mockSummarizeInStages.mockReset();
+    mockSummarizeInStages.mockResolvedValue(summaryResult("branch summary"));
+
+    const now = Date.now();
+    const sessionManager = {
+      ...stubSessionManager(),
+      getBranch: () => [
+        {
+          type: "message",
+          id: "summarized-old",
+          parentId: null,
+          timestamp: new Date(now).toISOString(),
+          message: { role: "user", content: "old turn absorbed by the summary", timestamp: now },
+        },
+        {
+          type: "message",
+          id: "kept-tail",
+          parentId: "summarized-old",
+          timestamp: new Date(now + 1).toISOString(),
+          message: {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "call-1", name: "read", arguments: {} }],
+            timestamp: now + 1,
+          },
+        },
+        {
+          type: "message",
+          id: "tool-1",
+          parentId: "kept-tail",
+          timestamp: new Date(now + 2).toISOString(),
+          message: {
+            role: "toolResult",
+            toolCallId: "call-1",
+            toolName: "read",
+            content: [{ type: "text", text: "kept tail result" }],
+            timestamp: now + 2,
+          },
+        },
+        {
+          type: "compaction",
+          id: "compaction-1",
+          parentId: "tool-1",
+          timestamp: new Date(now + 3).toISOString(),
+          summary: "previous summary",
+          firstKeptEntryId: "kept-tail",
+          tokensBefore: 38085,
+        },
+        {
+          type: "message",
+          id: "post-compaction",
+          parentId: "compaction-1",
+          timestamp: new Date(now + 4).toISOString(),
+          message: { role: "user", content: "new turn after compaction", timestamp: now + 4 },
+        },
+      ],
+    } as ExtensionContext["sessionManager"];
+    const model = createAnthropicModelFixture();
+    setCompactionSafeguardRuntime(sessionManager, { model, recentTurnsPreserve: 0 });
+
+    const mockEvent = {
+      preparation: {
+        messagesToSummarize: [] as AgentMessage[],
+        turnPrefixMessages: [] as AgentMessage[],
+        firstKeptEntryId: "entry-x",
+        tokensBefore: 38085,
+        fileOps: { read: [], edited: [], written: [] },
+        settings: { reserveTokens: 4000 },
+        isSplitTurn: true,
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+    const { result } = await runCompactionScenario({
+      sessionManager,
+      event: mockEvent,
+      apiKey: "test-key",
+    });
+
+    const compaction = expectCompactionResult(result);
+    expect(compaction.summary).toContain("branch summary");
+    expect(mockSummarizeInStages).toHaveBeenCalledTimes(1);
+    const summarizeCall = requireRecord(mockCallArg(mockSummarizeInStages));
+    const messages = requireArray(summarizeCall.messages);
+    // The tool-call/result tail retained before the compaction boundary is valid
+    // replay history and must reach the fallback summary.
+    expect(
+      messages.some((message) => {
+        const record = requireRecord(message);
+        return record.role === "toolResult" && record.toolName === "read";
+      }),
+    ).toBe(true);
+    // History already absorbed by the boundary summary stays out of the replay.
+    expect(
+      messages.some((message) => {
+        const record = requireRecord(message);
+        return record.role === "user" && record.content === "old turn absorbed by the summary";
+      }),
+    ).toBe(false);
+  });
+
   it("does not replay inter-session sessions_send branch turns as fallback history", async () => {
     mockSummarizeInStages.mockReset();
     mockSummarizeInStages.mockResolvedValue(summaryResult("branch summary"));

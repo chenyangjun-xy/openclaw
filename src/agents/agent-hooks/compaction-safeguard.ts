@@ -112,6 +112,7 @@ function prependPreviousSummaryForRedistill(params: {
 }
 
 type SessionBranchEntry = {
+  id?: unknown;
   type?: unknown;
   message?: unknown;
   customType?: unknown;
@@ -121,6 +122,7 @@ type SessionBranchEntry = {
   timestamp?: unknown;
   summary?: unknown;
   fromId?: unknown;
+  firstKeptEntryId?: unknown;
 };
 
 function coerceTimestamp(value: unknown): number {
@@ -184,8 +186,32 @@ function collectSessionBranchMessages(sessionManager: unknown): AgentMessage[] {
       typeof entry === "object" &&
       (entry as SessionBranchEntry).type === "compaction",
   );
-  const activeEntries =
-    latestCompactionIndex >= 0 ? entries.slice(latestCompactionIndex + 1) : entries;
+  // A compaction retains history starting at its firstKeptEntryId, which can precede
+  // the boundary entry itself (e.g. tool-call/result tails pinned before the summary).
+  // Slice from that entry so the fallback recovery keeps the valid kept tail instead
+  // of discarding it; without firstKeptEntryId fall back to the post-boundary entries.
+  let activeEntries: unknown[];
+  if (latestCompactionIndex >= 0) {
+    const latestCompaction = entries[latestCompactionIndex] as SessionBranchEntry;
+    const firstKeptEntryId =
+      typeof latestCompaction.firstKeptEntryId === "string"
+        ? latestCompaction.firstKeptEntryId
+        : undefined;
+    const firstKeptEntryIndex = firstKeptEntryId
+      ? entries.findIndex(
+          (entry) =>
+            entry !== null &&
+            typeof entry === "object" &&
+            (entry as SessionBranchEntry).id === firstKeptEntryId,
+        )
+      : -1;
+    activeEntries =
+      firstKeptEntryIndex >= 0 && firstKeptEntryIndex <= latestCompactionIndex
+        ? entries.slice(firstKeptEntryIndex)
+        : entries.slice(latestCompactionIndex + 1);
+  } else {
+    activeEntries = entries;
+  }
   return activeEntries
     .map((entry) =>
       entry && typeof entry === "object"

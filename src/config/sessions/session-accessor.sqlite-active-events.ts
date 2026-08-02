@@ -75,7 +75,7 @@ export type SessionTranscriptBoundedMessageTailPage = SessionTranscriptMessageEv
   serializedBytes: number;
 };
 
-type CurrentProjection = {
+export type CurrentProjection = {
   database: OpenClawAgentDatabase;
   resolved: ReturnType<typeof resolveSqliteTranscriptReadScope>;
   state: SessionTranscriptProjectionState;
@@ -133,7 +133,7 @@ function readProjectionSnapshot(
   };
 }
 
-function withCurrentProjectionSnapshot<T>(
+export function withCurrentProjectionSnapshot<T>(
   scope: SessionTranscriptReadScope,
   read: (projection: CurrentProjection) => T,
 ): T {
