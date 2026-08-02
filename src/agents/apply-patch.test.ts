@@ -1117,6 +1117,12 @@ describe("applyPatch", () => {
         files.delete(filePath);
       }),
       mkdirp: vi.fn(async () => {}),
+      stat: vi.fn(async ({ filePath }: { filePath: string }) => {
+        const contents = files.get(filePath);
+        return contents === undefined
+          ? null
+          : { type: "file" as const, size: Buffer.byteLength(contents), mtimeMs: 0 };
+      }),
     };
 
     const patch = `*** Begin Patch

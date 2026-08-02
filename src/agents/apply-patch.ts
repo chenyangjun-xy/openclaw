@@ -24,6 +24,7 @@ import {
   withFileMutationQueue,
   withFileMutationQueues,
 } from "./sessions/tools/file-mutation-queue.js";
+import { verifyPersistedUtf8File } from "./sessions/tools/file-write-verification.js";
 
 const BEGIN_PATCH_MARKER = "*** Begin Patch";
 const END_PATCH_MARKER = "*** End Patch";
@@ -193,6 +194,12 @@ async function applyPatch(input: string, options: ApplyPatchOptions): Promise<Ap
           ops: fileOps,
           hint: `Use "*** Update File: ${target.display}" to change it, or delete it earlier in the same patch.`,
         });
+        await verifyPatchTargetPersisted({
+          ops: fileOps,
+          filePath: target.resolved,
+          display: target.display,
+          content: hunk.contents,
+        });
       });
       recordSummary(summary, seen, "added", target.display);
       continue;
@@ -226,6 +233,12 @@ async function applyPatch(input: string, options: ApplyPatchOptions): Promise<Ap
             } else {
               noOpPaths.delete(target.display);
               await fileOps.writeFile(target.resolved, applied);
+              await verifyPatchTargetPersisted({
+                ops: fileOps,
+                filePath: target.resolved,
+                display: target.display,
+                content: applied,
+              });
             }
           } else {
             noOpPaths.delete(target.display);
@@ -234,6 +247,12 @@ async function applyPatch(input: string, options: ApplyPatchOptions): Promise<Ap
               contents: applied,
               ops: fileOps,
               hint: "Delete it earlier in the same patch to replace it.",
+            });
+            await verifyPatchTargetPersisted({
+              ops: fileOps,
+              filePath: moveTarget.resolved,
+              display: moveTarget.display,
+              content: applied,
             });
             await fileOps.remove(target.resolved);
           }
@@ -253,6 +272,12 @@ async function applyPatch(input: string, options: ApplyPatchOptions): Promise<Ap
         } else {
           noOpPaths.delete(target.display);
           await fileOps.writeFile(target.resolved, applied);
+          await verifyPatchTargetPersisted({
+            ops: fileOps,
+            filePath: target.resolved,
+            display: target.display,
+            content: applied,
+          });
           recordSummary(summary, seen, "modified", target.display);
         }
       },
@@ -265,6 +290,19 @@ async function applyPatch(input: string, options: ApplyPatchOptions): Promise<Ap
     text: noOp ? `No changes made to ${Array.from(noOpPaths).join(", ")}.` : formatSummary(summary),
     ...(noOp ? { noOp: true } : {}),
   };
+}
+
+async function verifyPatchTargetPersisted(params: {
+  ops: PatchFileOps;
+  filePath: string;
+  display: string;
+  content: string;
+}): Promise<void> {
+  if (!(await verifyPersistedUtf8File(params.filePath, params.content, params.ops))) {
+    throw new Error(
+      `ApplyPatch verification failed for ${params.display}: the persisted regular file does not match the requested content. Inspect the target and retry.`,
+    );
+  }
 }
 
 function recordSummary(

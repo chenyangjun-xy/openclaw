@@ -8,6 +8,7 @@ import {
 } from "./memory-write-provenance.js";
 import { toRelativeSandboxPath } from "./path-policy.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
+import type { PersistedFileStat } from "./sessions/tools/file-write-verification.js";
 import { decodeUtf8File } from "./utf8-file.js";
 
 export type SandboxApplyPatchConfig = {
@@ -31,6 +32,7 @@ export type PatchFileOps = {
   createFileExclusive: (filePath: string, content: string) => Promise<PatchCreateOutcome>;
   remove: (filePath: string) => Promise<void>;
   mkdirp: (dir: string) => Promise<void>;
+  statFile: (filePath: string) => Promise<PersistedFileStat | null>;
 };
 
 export async function createPatchTarget(params: {
@@ -68,6 +70,7 @@ export function resolvePatchFileOps(options: ApplyPatchFileOptions): PatchFileOp
         },
         remove: (filePath) => bridge.remove({ filePath, cwd: root, force: false }),
         mkdirp: (dir) => bridge.mkdirp({ filePath: dir, cwd: root }),
+        statFile: (filePath) => bridge.stat({ filePath, cwd: root }),
       },
     });
   }
@@ -95,6 +98,7 @@ export function resolvePatchFileOps(options: ApplyPatchFileOptions): PatchFileOp
         mkdirp: async (dir) => {
           await fs.mkdir(dir, { recursive: true });
         },
+        statFile: (filePath) => statPatchFile(filePath),
       },
     });
   }
@@ -151,8 +155,30 @@ export function resolvePatchFileOps(options: ApplyPatchFileOptions): PatchFileOp
         }
         await root.mkdir(relative);
       },
+      statFile: (filePath) => statPatchFile(filePath),
     },
   });
+}
+
+async function statPatchFile(absolutePath: string): Promise<PersistedFileStat | null> {
+  try {
+    const stat = await fs.stat(absolutePath);
+    return {
+      type: stat.isFile() ? "file" : stat.isDirectory() ? "directory" : "other",
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+    } as const;
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code?: unknown }).code === "ENOENT"
+    ) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 class PatchCreateExistsSignal extends Error {}
