@@ -220,8 +220,9 @@ async function downloadFalVideo(
     try {
       assertProviderBinaryResponseContent(response, "fal generated video download", "video");
     } catch (error) {
-      // A rejected binary response still owns a live socket until its unread body is canceled.
-      await response.body?.cancel().catch(() => undefined);
+      // A debug-capture clone can keep the tee open, so waiting for cancel
+      // would hang before the malformed-body error can be thrown.
+      void response.body?.cancel().catch(() => undefined);
       throw error;
     }
     const mimeType = normalizeOptionalString(response.headers.get("content-type")) ?? "video/mp4";
@@ -246,7 +247,7 @@ async function downloadFalVideo(
       throw error;
     }
     if (buffer.byteLength === 0) {
-      await response.body?.cancel().catch(() => undefined);
+      void response.body?.cancel().catch(() => undefined);
       throw new Error("fal generated video download: malformed video response");
     }
     return {

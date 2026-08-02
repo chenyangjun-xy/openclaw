@@ -9,7 +9,7 @@ const { fetchWithSsrFGuardMock } = vi.hoisted(() => ({
 }));
 
 import { buildFalImageGenerationProvider } from "./image-generation-provider.js";
-import { setFalFetchGuardForTesting } from "./test-support.js";
+import { releasedCapturedStream, setFalFetchGuardForTesting } from "./test-support.js";
 
 const falApiKey = { apiKey: "fal-test-key", source: "env", mode: "api-key" } as const;
 
@@ -311,6 +311,44 @@ describe("fal image-generation provider", () => {
         cfg: {},
       }),
     ).rejects.toThrow("fal image download: malformed image response");
+  });
+
+  it("rejects a captured malformed image download without waiting for its cloned stream", async () => {
+    const canceledBodies: ReadableStream<Uint8Array>[] = [];
+    let releaseCancel!: () => void;
+    const cancelGate = new Promise<void>((resolve) => {
+      releaseCancel = resolve;
+    });
+    fetchWithSsrFGuardMock
+      .mockResolvedValueOnce(
+        releasedJson({ images: [{ url: "https://v3.fal.media/files/example/generated.png" }] }),
+      )
+      .mockResolvedValueOnce(
+        releasedCapturedStream({
+          contentType: "application/json",
+          cancelGate,
+          onCancel: (body) => canceledBodies.push(body),
+        }),
+      );
+
+    const generation = provider.generateImage({
+      provider: "fal",
+      model: "fal-ai/flux/dev",
+      prompt: "draw a cat",
+      cfg: {},
+    });
+    const outcome = await Promise.race([
+      generation.then(
+        () => "resolved",
+        (error: unknown) => `rejected:${error instanceof Error ? error.message : String(error)}`,
+      ),
+      new Promise<string>((resolve) => {
+        setTimeout(() => resolve("pending"), 100);
+      }),
+    ]);
+    releaseCancel();
+    expect(outcome).toBe("rejected:fal image download: malformed image response");
+    expect(canceledBodies).toHaveLength(1);
   });
 
   it("shares an explicit operation deadline across generated image downloads", async () => {

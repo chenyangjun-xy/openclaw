@@ -4,7 +4,7 @@ import * as providerAuth from "openclaw/plugin-sdk/provider-auth-runtime";
 import * as providerHttp from "openclaw/plugin-sdk/provider-http";
 import { expectExplicitVideoGenerationCapabilities } from "openclaw/plugin-sdk/provider-test-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { setFalVideoFetchGuardForTesting } from "./test-support.js";
+import { releasedCapturedStream, setFalVideoFetchGuardForTesting } from "./test-support.js";
 import { buildFalVideoGenerationProvider } from "./video-generation-provider.js";
 
 function createMockRequestConfig() {
@@ -296,6 +296,62 @@ describe("fal video generation provider", () => {
         cfg: {},
       }),
     ).rejects.toThrow("fal generated video download: malformed video response");
+  });
+
+  it("rejects a captured malformed video download without waiting for its cloned stream", async () => {
+    mockFalProviderRuntime();
+    const canceledBodies: ReadableStream<Uint8Array>[] = [];
+    let releaseCancel!: () => void;
+    const cancelGate = new Promise<void>((resolve) => {
+      releaseCancel = resolve;
+    });
+    fetchGuardMock
+      .mockResolvedValueOnce(
+        releasedJson({
+          request_id: "req-123",
+          status_url: "https://queue.fal.run/fal-ai/minimax/requests/req-123/status",
+          response_url: "https://queue.fal.run/fal-ai/minimax/requests/req-123",
+        }),
+      )
+      .mockResolvedValueOnce(releasedJson({ status: "COMPLETED" }))
+      .mockResolvedValueOnce(
+        releasedJson({
+          status: "COMPLETED",
+          response: {
+            video: { url: "https://fal.run/files/video.mp4" },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        releasedCapturedStream({
+          contentType: "application/json",
+          cancelGate,
+          onCancel: (body) => canceledBodies.push(body),
+        }),
+      );
+
+    const provider = buildFalVideoGenerationProvider();
+    const generation = provider.generateVideo({
+      provider: "fal",
+      model: "fal-ai/minimax/video-01-live",
+      prompt: "A spaceship emerges from the clouds",
+      durationSeconds: 5,
+      aspectRatio: "16:9",
+      resolution: "720P",
+      cfg: {},
+    });
+    const outcome = await Promise.race([
+      generation.then(
+        () => "resolved",
+        (error: unknown) => `rejected:${error instanceof Error ? error.message : String(error)}`,
+      ),
+      new Promise<string>((resolve) => {
+        setTimeout(() => resolve("pending"), 100);
+      }),
+    ]);
+    releaseCancel();
+    expect(outcome).toBe("rejected:fal generated video download: malformed video response");
+    expect(canceledBodies).toHaveLength(1);
   });
 
   it("rejects missing fal queue statuses without waiting for timeout", async () => {
