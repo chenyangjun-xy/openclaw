@@ -359,6 +359,17 @@ class RemoteShellSandboxFsBridge implements SandboxFsBridge {
     };
   }
 
+  async entryExists(params: {
+    filePath: string;
+    cwd?: string;
+    signal?: AbortSignal;
+  }): Promise<boolean> {
+    const target = this.resolveTarget(params);
+    // `-e` misses dangling symlinks; `-L` keeps them visible, so together the
+    // test mirrors lstat semantics: any entry at the path counts as present.
+    return await this.remotePathExists(target.containerPath, params.signal);
+  }
+
   private getMounts(): MountInfo[] {
     const workspaceRoot = path.resolve(this.sandbox.workspaceDir);
     const agentRoot = path.resolve(this.sandbox.agentWorkspaceDir);

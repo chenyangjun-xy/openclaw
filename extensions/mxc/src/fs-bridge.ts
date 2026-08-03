@@ -169,6 +169,17 @@ class MxcFsBridge implements SandboxFsBridge {
     };
   }
 
+  async entryExists(params: {
+    filePath: string;
+    cwd?: string;
+    signal?: AbortSignal;
+  }): Promise<boolean> {
+    const target = this.resolveTarget(params);
+    // fs-safe Root.exists lstat's the final component, so a dangling symlink is
+    // still reported as a present entry, mirroring the bridge's uniform contract.
+    return await (await fsRoot(target.mount.hostRoot)).exists(target.mountRelativePath);
+  }
+
   private resolveTarget(params: { filePath: string; cwd?: string }): ResolvedMxcPath {
     const input = params.filePath.trim();
     const cwd = params.cwd?.trim() ? path.resolve(params.cwd) : this.defaultContainerRoot;

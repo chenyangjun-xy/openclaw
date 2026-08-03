@@ -71,4 +71,12 @@ export type SandboxFsBridge = {
     cwd?: string;
     signal?: AbortSignal;
   }): Promise<SandboxFsStat | null>;
+  /**
+   * Reports whether any filesystem entry exists at the path, using lstat
+   * semantics: a dangling symlink is still an entry. This is the authoritative
+   * absence check for removal receipts. `stat` is not enough because it follows
+   * the final symlink and therefore cannot distinguish a dangling link from an
+   * absent path.
+   */
+  entryExists(params: { filePath: string; cwd?: string; signal?: AbortSignal }): Promise<boolean>;
 };

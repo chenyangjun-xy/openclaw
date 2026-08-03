@@ -42,6 +42,7 @@ describe("Agent-specific tool filtering", () => {
     remove: async () => {},
     rename: async () => {},
     stat: async () => null,
+    entryExists: async () => false,
   };
 
   function expectReadOnlyToolSet(toolNames: string[], extraDenied: string[] = []) {

@@ -87,6 +87,7 @@ function createMemoryPatchSandbox(
         ? null
         : { type: "file", size: Buffer.byteLength(contents), mtimeMs: 0 };
     },
+    entryExists: async ({ filePath }) => files.has(filePath),
     mkdirp,
   };
   return {

@@ -33,6 +33,13 @@ export type PatchFileOps = {
   remove: (filePath: string) => Promise<void>;
   mkdirp: (dir: string) => Promise<void>;
   statFile: (filePath: string) => Promise<PersistedFileStat | null>;
+  /**
+   * Uniform entry-existence contract: whether any filesystem entry (regular
+   * file, directory, symlink including dangling, etc.) exists at the path.
+   * Uses lstat semantics so an entry that survives a removal attempt cannot
+   * masquerade as absent through a follow-style stat. `statFile` is not enough.
+   */
+  entryExists: (filePath: string) => Promise<boolean>;
 };
 
 export async function createPatchTarget(params: {
@@ -71,6 +78,7 @@ export function resolvePatchFileOps(options: ApplyPatchFileOptions): PatchFileOp
         remove: (filePath) => bridge.remove({ filePath, cwd: root, force: false }),
         mkdirp: (dir) => bridge.mkdirp({ filePath: dir, cwd: root }),
         statFile: (filePath) => bridge.stat({ filePath, cwd: root }),
+        entryExists: (filePath) => bridge.entryExists({ filePath, cwd: root }),
       },
     });
   }
@@ -99,6 +107,7 @@ export function resolvePatchFileOps(options: ApplyPatchFileOptions): PatchFileOp
           await fs.mkdir(dir, { recursive: true });
         },
         statFile: (filePath) => statPatchFile(filePath),
+        entryExists: (filePath) => entryExistsAtPath(filePath),
       },
     });
   }
@@ -156,6 +165,12 @@ export function resolvePatchFileOps(options: ApplyPatchFileOptions): PatchFileOp
         await root.mkdir(relative);
       },
       statFile: (filePath) => statPatchFile(filePath),
+      entryExists: async (filePath) => {
+        const relative = toRelativeSandboxPath(options.cwd, filePath);
+        // fs-safe Root.stat is lstat-based, so a dangling symlink still reports
+        // present — the authoritative absence contract for removal receipts.
+        return await (await rootPromise).exists(relative);
+      },
     },
   });
 }
@@ -176,6 +191,24 @@ async function statPatchFile(absolutePath: string): Promise<PersistedFileStat | 
       (error as { code?: unknown }).code === "ENOENT"
     ) {
       return null;
+    }
+    throw error;
+  }
+}
+
+async function entryExistsAtPath(absolutePath: string): Promise<boolean> {
+  try {
+    await fs.lstat(absolutePath);
+    return true;
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      ((error as { code?: unknown }).code === "ENOENT" ||
+        (error as { code?: unknown }).code === "ENOTDIR")
+    ) {
+      return false;
     }
     throw error;
   }

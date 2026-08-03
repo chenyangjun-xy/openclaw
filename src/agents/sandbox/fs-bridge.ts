@@ -21,7 +21,12 @@ import {
   buildPinnedWritePlan,
 } from "./fs-bridge-mutation-helper.js";
 import { SandboxFsPathGuard } from "./fs-bridge-path-safety.js";
-import { buildStatPlan, type SandboxFsCommandPlan } from "./fs-bridge-shell-command-plans.js";
+import {
+  buildEntryExistsPlan,
+  buildStatPlan,
+  SANDBOX_ENTRY_EXISTS_ABSENT_EXIT_CODE,
+  type SandboxFsCommandPlan,
+} from "./fs-bridge-shell-command-plans.js";
 import { parseSandboxStatMtimeMs, parseSandboxStatSize } from "./fs-bridge-stat-parse.js";
 import type { SandboxFsBridge, SandboxFsStat, SandboxResolvedPath } from "./fs-bridge.types.js";
 import {
@@ -302,6 +307,36 @@ class SandboxFsBridgeImpl implements SandboxFsBridge {
       size: parseSandboxStatSize(sizeRaw),
       mtimeMs: parseSandboxStatMtimeMs(mtimeRaw),
     };
+  }
+
+  async entryExists(params: {
+    filePath: string;
+    cwd?: string;
+    signal?: AbortSignal;
+  }): Promise<boolean> {
+    const target = this.resolveResolvedPath(params);
+    // Anchor at the canonical parent so the final entry is tested by basename.
+    // The plan's boundary check uses the removal-target alias policy, so a
+    // still-present final symlink is preserved and reported as an entry instead
+    // of being resolved away (lstat semantics).
+    const anchoredTarget = await this.pathGuard.resolveAnchoredSandboxEntry(
+      target,
+      "check entry existence",
+    );
+    const result = await this.runPlannedCommand(
+      buildEntryExistsPlan(target, anchoredTarget),
+      params.signal,
+    );
+    if (result.code === 0) {
+      return true;
+    }
+    if (result.code === SANDBOX_ENTRY_EXISTS_ABSENT_EXIT_CODE) {
+      return false;
+    }
+    const stderr = result.stderr.toString("utf8").trim();
+    throw new Error(
+      `entry existence check failed for ${target.containerPath}: ${stderr || `exit code ${result.code}`}`,
+    );
   }
 
   private async runCommand(

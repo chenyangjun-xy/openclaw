@@ -84,6 +84,17 @@ function realFsBridge(root: string): SandboxFsBridge {
       await fs.mkdir(toAbsolute(filePath), { recursive: true });
     },
     stat: async ({ filePath }) => stat(filePath),
+    entryExists: async ({ filePath }) => {
+      try {
+        await fs.lstat(toAbsolute(filePath));
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          return false;
+        }
+        throw error;
+      }
+    },
   };
 }
 
@@ -155,5 +166,122 @@ describe("applyPatch write verification on a real filesystem", () => {
 
     // The corrupted bytes are really on disk: no false-success receipt.
     expect(await fs.readFile(path.join(dir, "source.txt"), "utf8")).toBe("corrupted");
+  });
+
+  it("persists a delete and a move source removal on a real filesystem", async () => {
+    const dir = await makeTempDir();
+    await fs.writeFile(path.join(dir, "doomed.txt"), "x\n", "utf8");
+    await fs.writeFile(path.join(dir, "mover.txt"), "foo\nbar\n", "utf8");
+
+    const patch = `*** Begin Patch
+*** Delete File: doomed.txt
+*** Update File: mover.txt
+*** Move to: moved.txt
+@@
+ foo
+-bar
++baz
+*** End Patch`;
+
+    const result = await applyPatch(patch, { cwd: dir, workspaceOnly: false });
+
+    expect(result.summary.deleted).toContain("doomed.txt");
+    expect(result.summary.modified).toContain("moved.txt");
+    await expect(fs.lstat(path.join(dir, "doomed.txt"))).rejects.toThrow();
+    await expect(fs.lstat(path.join(dir, "mover.txt"))).rejects.toThrow();
+    expect(await fs.readFile(path.join(dir, "moved.txt"), "utf8")).toBe("foo\nbaz\n");
+  });
+
+  it("rejects a delete whose real remove leaves the entry behind", async () => {
+    const dir = await makeTempDir();
+    const bridge = realFsBridge(dir);
+    // A remove that resolves without deleting the entry.
+    const noOpRemoveBridge: SandboxFsBridge = {
+      ...bridge,
+      remove: async () => {},
+    };
+
+    await fs.writeFile(path.join(dir, "source.txt"), "x\n", "utf8");
+
+    const patch = `*** Begin Patch
+*** Delete File: source.txt
+*** End Patch`;
+
+    await expect(
+      applyPatch(patch, { cwd: dir, sandbox: { root: dir, bridge: noOpRemoveBridge } }),
+    ).rejects.toThrow(
+      "ApplyPatch verification failed for source.txt: the entry still exists after removal.",
+    );
+    expect(await fs.readFile(path.join(dir, "source.txt"), "utf8")).toBe("x\n");
+  });
+
+  it("rejects a move whose real source removal leaves the source behind", async () => {
+    const dir = await makeTempDir();
+    const bridge = realFsBridge(dir);
+    const noOpRemoveBridge: SandboxFsBridge = {
+      ...bridge,
+      remove: async () => {},
+    };
+
+    await fs.writeFile(path.join(dir, "source.txt"), "foo\nbar\n", "utf8");
+
+    const patch = `*** Begin Patch
+*** Update File: source.txt
+*** Move to: dest.txt
+@@
+ foo
+-bar
++baz
+*** End Patch`;
+
+    await expect(
+      applyPatch(patch, { cwd: dir, sandbox: { root: dir, bridge: noOpRemoveBridge } }),
+    ).rejects.toThrow(
+      "ApplyPatch verification failed for source.txt: the entry still exists after removal.",
+    );
+    // The verified destination is really on disk, and the unverified source
+    // removal did not happen — both entries exist, so no success receipt.
+    expect(await fs.readFile(path.join(dir, "dest.txt"), "utf8")).toBe("foo\nbaz\n");
+    expect(await fs.readFile(path.join(dir, "source.txt"), "utf8")).toBe("foo\nbar\n");
+  });
+
+  it("treats a still-present dangling symlink as a removal verification failure", async () => {
+    const dir = await makeTempDir();
+    const bridge = realFsBridge(dir);
+    // `stat` follows symlinks and would report this dangling link as absent;
+    // the entry-existence check must use lstat semantics and reject the removal.
+    const noOpRemoveBridge: SandboxFsBridge = {
+      ...bridge,
+      remove: async () => {},
+    };
+
+    await fs.symlink(path.join(dir, "missing-target.txt"), path.join(dir, "dangling.txt"));
+
+    const patch = `*** Begin Patch
+*** Delete File: dangling.txt
+*** End Patch`;
+
+    await expect(
+      applyPatch(patch, { cwd: dir, sandbox: { root: dir, bridge: noOpRemoveBridge } }),
+    ).rejects.toThrow(
+      "ApplyPatch verification failed for dangling.txt: the entry still exists after removal.",
+    );
+    await expect(fs.readlink(path.join(dir, "dangling.txt"))).resolves.toBe(
+      path.join(dir, "missing-target.txt"),
+    );
+  });
+
+  it("verifies a real delete of a dangling symlink succeeds", async () => {
+    const dir = await makeTempDir();
+    await fs.symlink(path.join(dir, "missing-target.txt"), path.join(dir, "dangling.txt"));
+
+    const patch = `*** Begin Patch
+*** Delete File: dangling.txt
+*** End Patch`;
+
+    const result = await applyPatch(patch, { cwd: dir, workspaceOnly: false });
+
+    expect(result.summary.deleted).toEqual(["dangling.txt"]);
+    await expect(fs.lstat(path.join(dir, "dangling.txt"))).rejects.toThrow();
   });
 });

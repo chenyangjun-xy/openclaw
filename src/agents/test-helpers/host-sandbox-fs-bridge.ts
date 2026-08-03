@@ -111,6 +111,24 @@ export function createSandboxFsBridgeFromResolver(
         throw error;
       }
     },
+    entryExists: async ({ filePath, cwd }) => {
+      const target = resolvePath(filePath, cwd);
+      if (!target.hostPath) {
+        throw new Error(`Expected hostPath for ${target.containerPath}`);
+      }
+      try {
+        await fs.lstat(target.hostPath);
+        return true;
+      } catch (error) {
+        if (
+          (error as NodeJS.ErrnoException).code === "ENOENT" ||
+          (error as NodeJS.ErrnoException).code === "ENOTDIR"
+        ) {
+          return false;
+        }
+        throw error;
+      }
+    },
   };
 }
 

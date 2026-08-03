@@ -207,7 +207,14 @@ async function applyPatch(input: string, options: ApplyPatchOptions): Promise<Ap
 
     if (hunk.kind === "delete") {
       const target = await resolvePatchPath(hunk.path, options, PATH_ALIAS_POLICIES.unlinkTarget);
-      await withFileMutationQueue(target.resolved, () => fileOps.remove(target.resolved));
+      await withFileMutationQueue(target.resolved, async () => {
+        await fileOps.remove(target.resolved);
+        await verifyPatchEntryRemoved({
+          ops: fileOps,
+          filePath: target.resolved,
+          display: target.display,
+        });
+      });
       recordSummary(summary, seen, "deleted", target.display);
       continue;
     }
@@ -255,6 +262,11 @@ async function applyPatch(input: string, options: ApplyPatchOptions): Promise<Ap
               content: applied,
             });
             await fileOps.remove(target.resolved);
+            await verifyPatchEntryRemoved({
+              ops: fileOps,
+              filePath: target.resolved,
+              display: target.display,
+            });
           }
           if (!noOpPaths.has(target.display)) {
             recordSummary(
@@ -301,6 +313,21 @@ async function verifyPatchTargetPersisted(params: {
   if (!(await verifyPersistedUtf8File(params.filePath, params.content, params.ops))) {
     throw new Error(
       `ApplyPatch verification failed for ${params.display}: the persisted regular file does not match the requested content. Inspect the target and retry.`,
+    );
+  }
+}
+
+async function verifyPatchEntryRemoved(params: {
+  ops: PatchFileOps;
+  filePath: string;
+  display: string;
+}): Promise<void> {
+  // A removal receipt must prove the entry is really gone. entryExists uses
+  // lstat semantics, so a still-present entry — including a dangling symlink
+  // that a follow-style stat would report as absent — fails the check.
+  if (await params.ops.entryExists(params.filePath)) {
+    throw new Error(
+      `ApplyPatch verification failed for ${params.display}: the entry still exists after removal. Inspect the target and retry.`,
     );
   }
 }

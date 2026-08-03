@@ -255,6 +255,25 @@ class OpenShellFsBridge implements SandboxFsBridge {
     };
   }
 
+  async entryExists(params: {
+    filePath: string;
+    cwd?: string;
+    signal?: AbortSignal;
+  }): Promise<boolean> {
+    const target = this.resolveTarget(params);
+    const hostPath = this.requireHostPath(target);
+    // lstat the entry itself: a still-present dangling symlink is an entry, only
+    // an absent path reports false. No boundary throw here — resolveTarget already
+    // bounds the path, and a present final symlink must not be treated as removed.
+    const stats = await fsPromises.lstat(hostPath).catch((err: unknown) => {
+      if (isNotFoundError(err)) {
+        return null;
+      }
+      throw err;
+    });
+    return stats !== null;
+  }
+
   private ensureWritable(target: ResolvedMountPath, action: string) {
     if (this.sandbox.workspaceAccess !== "rw" || !target.writable) {
       throw new Error(`Sandbox path is read-only; cannot ${action}: ${target.containerPath}`);

@@ -7,6 +7,9 @@ import {
   createSandbox,
   createSandboxFsBridge,
   createSeededSandboxFsBridge,
+  dockerExecResult,
+  getDockerArg,
+  getDockerScript,
   getScriptsFromCalls,
   installFsBridgeTestHarness,
   mockedExecDockerRaw,
@@ -177,6 +180,55 @@ describe("sandbox fs bridge shell compatibility", () => {
       expectNoScriptsContaining(scripts, 'mkdir -p -- "$2"');
       expectNoScriptsContaining(scripts, 'rm -f -- "$2"');
       expectNoScriptsContaining(scripts, 'mv -- "$3" "$2/$4"');
+    });
+  });
+
+  it("entry existence anchors the probe and maps the reserved absent exit code", async () => {
+    await withTempDir("openclaw-fs-bridge-entry-exists-", async (stateDir) => {
+      const workspaceDir = path.join(stateDir, "workspace");
+      await fs.mkdir(workspaceDir, { recursive: true });
+      await fs.writeFile(path.join(workspaceDir, "present.txt"), "x");
+
+      const bridge = createSandboxFsBridge({
+        sandbox: createSandbox({ workspaceDir, agentWorkspaceDir: workspaceDir }),
+      });
+
+      // Probe exit 0 means an entry is present.
+      await expect(bridge.entryExists({ filePath: "present.txt" })).resolves.toBe(true);
+
+      // Probe exit 3 means no entry at the path.
+      mockedExecDockerRaw.mockImplementation(async (args) => {
+        const script = getDockerScript(args);
+        if (script.includes('if [ -e "$2" ] || [ -L "$2" ]; then exit 0; fi')) {
+          return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), code: 3 };
+        }
+        if (script.includes('readlink -f -- "$cursor"')) {
+          return dockerExecResult(`${getDockerArg(args, 1)}\n`);
+        }
+        return dockerExecResult("");
+      });
+      await expect(bridge.entryExists({ filePath: "present.txt" })).resolves.toBe(false);
+
+      // Any other probe exit is an error, not an absence signal.
+      mockedExecDockerRaw.mockImplementation(async (args) => {
+        const script = getDockerScript(args);
+        if (script.includes('if [ -e "$2" ] || [ -L "$2" ]; then exit 0; fi')) {
+          return { stdout: Buffer.alloc(0), stderr: Buffer.from("boom"), code: 2 };
+        }
+        if (script.includes('readlink -f -- "$cursor"')) {
+          return dockerExecResult(`${getDockerArg(args, 1)}\n`);
+        }
+        return dockerExecResult("");
+      });
+      await expect(bridge.entryExists({ filePath: "present.txt" })).rejects.toThrow(
+        "entry existence check failed",
+      );
+
+      // The probe must test the entry itself, not follow it: `-L` keeps a
+      // still-present dangling symlink visible so removals cannot be faked.
+      const scripts = getScriptsFromCalls();
+      expectSomeScriptContaining(scripts, 'if [ -e "$2" ] || [ -L "$2" ]; then exit 0; fi');
+      expectNoScriptsContaining(scripts, "pipefail");
     });
   });
 

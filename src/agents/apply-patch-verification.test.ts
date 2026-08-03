@@ -49,6 +49,7 @@ function createVerificationSandbox(initialFiles: Record<string, string>) {
         ? null
         : { type: "file", size: Buffer.byteLength(contents), mtimeMs: 0 };
     },
+    entryExists: async ({ filePath }) => files.has(filePath),
   };
   return {
     files,
@@ -92,5 +93,42 @@ describe("applyPatch write verification", () => {
     await expect(applyPatch(patch, sandbox.options)).rejects.toThrow(
       "ApplyPatch verification failed for new.txt",
     );
+  });
+
+  it("rejects a delete whose delegated remove resolves without deleting the entry", async () => {
+    const sandbox = createVerificationSandbox({ "source.txt": "x\n" });
+    // Simulate a delegated remove that resolves but leaves the entry behind.
+    vi.spyOn(sandbox.bridge, "remove").mockImplementation(async () => {});
+
+    const patch = `*** Begin Patch
+*** Delete File: source.txt
+*** End Patch`;
+
+    await expect(applyPatch(patch, sandbox.options)).rejects.toThrow(
+      "ApplyPatch verification failed for source.txt: the entry still exists after removal.",
+    );
+    expect(sandbox.files.has("/sandbox/source.txt")).toBe(true);
+  });
+
+  it("rejects a move whose delegated source removal resolves without deleting", async () => {
+    const sandbox = createVerificationSandbox({ "source.txt": "foo\nbar\n" });
+    // The destination write is verified, but the source removal is a no-op, so
+    // the move must not report success while both entries exist.
+    vi.spyOn(sandbox.bridge, "remove").mockImplementation(async () => {});
+
+    const patch = `*** Begin Patch
+*** Update File: source.txt
+*** Move to: dest.txt
+@@
+ foo
+-bar
++baz
+*** End Patch`;
+
+    await expect(applyPatch(patch, sandbox.options)).rejects.toThrow(
+      "ApplyPatch verification failed for source.txt: the entry still exists after removal.",
+    );
+    expect(sandbox.files.has("/sandbox/dest.txt")).toBe(true);
+    expect(sandbox.files.has("/sandbox/source.txt")).toBe(true);
   });
 });
