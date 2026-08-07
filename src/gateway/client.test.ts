@@ -1,7 +1,8 @@
-// Gateway client tests cover WebSocket protocol negotiation, auth persistence,
-// proxy bypass setup, command dispatch, reconnect, and error handling.
 import { Buffer } from "node:buffer";
 import { generateKeyPairSync } from "node:crypto";
+// Gateway client tests cover WebSocket protocol negotiation, auth persistence,
+// proxy bypass setup, command dispatch, reconnect, and error handling.
+import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MIN_CLIENT_PROTOCOL_VERSION,
@@ -9,6 +10,13 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import type { DeviceIdentity } from "../infra/device-identity.js";
 import { captureEnv } from "../test-utils/env.js";
+
+function waitForFast<T>(
+  callback: () => T | Promise<T>,
+  options: { timeout?: number; interval?: number } = {},
+) {
+  return vi.waitFor(callback, { interval: 1, ...options });
+}
 
 type MockLoggingConfig = {
   redactPatterns?: string[];
@@ -215,12 +223,7 @@ function getLatestWs(): MockWebSocket {
   return ws;
 }
 
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`expected ${label} to be an object`);
-  }
-  return value as Record<string, unknown>;
-}
+const requireRecord = createRequireRecord("record", "expected-label-object");
 
 function expectRecordFields(
   value: unknown,
@@ -471,7 +474,6 @@ describe("GatewayClient security checks", () => {
   it("proxies ws:// loopback addresses when active proxy loopbackMode is proxy", async () => {
     const { startProxy, stopProxy } = await import("../infra/net/proxy/proxy-lifecycle.js");
     const handle = await startProxy({
-      enabled: true,
       proxyUrl: "http://127.0.0.1:3128",
       loopbackMode: "proxy",
     });
@@ -496,7 +498,6 @@ describe("GatewayClient security checks", () => {
   it("blocks ws:// loopback addresses when active proxy loopbackMode is block", async () => {
     const { startProxy, stopProxy } = await import("../infra/net/proxy/proxy-lifecycle.js");
     const handle = await startProxy({
-      enabled: true,
       proxyUrl: "http://127.0.0.1:3128",
       loopbackMode: "block",
     });
@@ -584,7 +585,7 @@ describe("GatewayClient request errors", () => {
       JSON.stringify({
         type: "event",
         event: "connect.challenge",
-        payload: { nonce: "nonce-1" },
+        payload: { nonce: "nonce-1", ts: 1_777_777_777_000 },
       }),
     );
     const connectFrame = JSON.parse(
@@ -652,7 +653,7 @@ describe("GatewayClient request errors", () => {
         JSON.stringify({
           type: "event",
           event: "connect.challenge",
-          payload: { nonce: "nonce-1" },
+          payload: { nonce: "nonce-1", ts: 1_777_777_777_000 },
         }),
       );
       const connectFrame = JSON.parse(
@@ -864,7 +865,7 @@ describe("GatewayClient close handling", () => {
         JSON.stringify({
           type: "event",
           event: "connect.challenge",
-          payload: { nonce: "nonce-1" },
+          payload: { nonce: "nonce-1", ts: 1_777_777_777_000 },
         }),
       );
       expect(firstWs.sent.some((frame) => frame.includes('"method":"connect"'))).toBe(true);
@@ -892,7 +893,7 @@ describe("GatewayClient close handling", () => {
         JSON.stringify({
           type: "event",
           event: "connect.challenge",
-          payload: { nonce: "nonce-2" },
+          payload: { nonce: "nonce-2", ts: 1_777_777_778_000 },
         }),
       );
       const connectFrame = JSON.parse(
@@ -937,7 +938,7 @@ describe("GatewayClient close handling", () => {
         JSON.stringify({
           type: "event",
           event: "connect.challenge",
-          payload: { nonce: "nonce-1" },
+          payload: { nonce: "nonce-1", ts: 1_777_777_777_000 },
         }),
       );
       firstWs.emitClose(1000, "");
@@ -956,7 +957,7 @@ describe("GatewayClient close handling", () => {
         JSON.stringify({
           type: "event",
           event: "connect.challenge",
-          payload: { nonce: "nonce-2" },
+          payload: { nonce: "nonce-2", ts: 1_777_777_778_000 },
         }),
       );
       secondWs.emitClose(1000, "");
@@ -1163,6 +1164,9 @@ describe("GatewayClient connect auth payload", () => {
         approvalRuntimeToken?: string;
         agentRuntimeIdentityToken?: string;
       };
+      device?: {
+        signedAt?: number;
+      };
     };
   };
 
@@ -1211,12 +1215,79 @@ describe("GatewayClient connect auth payload", () => {
     client.stop();
   });
 
-  function emitConnectChallenge(ws: MockWebSocket, nonce = "nonce-1") {
+  it("signs device proof with Gateway time instead of client wall-clock time", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2040-01-01T00:00:00.000Z"));
+    const client = createClientWithIdentity("device-gateway-time", vi.fn());
+    const challengeTs = 1_700_000_000_123;
+
+    client.start();
+    const ws = getLatestWs();
+    ws.emitOpen();
+    emitConnectChallenge(ws, "nonce-clock-skew", challengeTs);
+    const connect = connectRequestFrom(ws);
+
+    expect(connect.params?.device?.signedAt).toBe(challengeTs);
+    client.stop();
+    vi.useRealTimers();
+  });
+
+  it("fails closed when a device challenge omits its Gateway timestamp", () => {
+    const onConnectError = vi.fn();
+    const client = createClientWithIdentity("device-missing-challenge-time", vi.fn(), {
+      onConnectError,
+    });
+
+    client.start();
+    const ws = getLatestWs();
+    ws.emitOpen();
     ws.emitMessage(
       JSON.stringify({
         type: "event",
         event: "connect.challenge",
-        payload: { nonce },
+        payload: { nonce: "nonce-missing-time" },
+      }),
+    );
+
+    expect(ws.sent.some((frame) => frame.includes('"method":"connect"'))).toBe(false);
+    expect(firstMockArg(onConnectError, "connect error")).toMatchObject({
+      message: "gateway connect challenge timestamp invalid",
+    });
+    expect(ws.lastClose).toEqual({ code: 1008, reason: "connect failed" });
+    client.stop();
+  });
+
+  it("fails closed when a device challenge timestamp is malformed", () => {
+    const onConnectError = vi.fn();
+    const client = createClientWithIdentity("device-invalid-challenge-time", vi.fn(), {
+      onConnectError,
+    });
+
+    client.start();
+    const ws = getLatestWs();
+    ws.emitOpen();
+    ws.emitMessage(
+      JSON.stringify({
+        type: "event",
+        event: "connect.challenge",
+        payload: { nonce: "nonce-invalid-time", ts: "not-a-number" },
+      }),
+    );
+
+    expect(ws.sent.some((frame) => frame.includes('"method":"connect"'))).toBe(false);
+    expect(firstMockArg(onConnectError, "connect error")).toMatchObject({
+      message: "gateway connect challenge timestamp invalid",
+    });
+    expect(ws.lastClose).toEqual({ code: 1008, reason: "connect failed" });
+    client.stop();
+  });
+
+  function emitConnectChallenge(ws: MockWebSocket, nonce = "nonce-1", ts = 1_800_000_000_000) {
+    ws.emitMessage(
+      JSON.stringify({
+        type: "event",
+        event: "connect.challenge",
+        payload: { nonce, ts },
       }),
     );
   }
@@ -1326,7 +1397,7 @@ describe("GatewayClient connect auth payload", () => {
       const { ws, connect } = startClientAndConnect({ client });
 
       expect(() => emitHelloOk(ws, connect.id)).not.toThrow();
-      await vi.waitFor(() => {
+      await waitForFast(() => {
         expect(onHelloOk).toHaveBeenCalledOnce();
       });
       expect(onConnectError).not.toHaveBeenCalled();
@@ -1387,7 +1458,7 @@ describe("GatewayClient connect auth payload", () => {
       params.failureDetails,
       params.failureMessage,
     );
-    await vi.waitFor(() => expect(wsInstances.length).toBeGreaterThan(1), { timeout: 3_000 });
+    await waitForFast(() => expect(wsInstances.length).toBeGreaterThan(1), { timeout: 3_000 });
     const ws = getLatestWs();
     ws.emitOpen();
     emitConnectChallenge(ws, "nonce-2");
@@ -1554,7 +1625,7 @@ describe("GatewayClient connect auth payload", () => {
     ws.autoCloseOnClose = false;
     client.stop();
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       const error = firstMockArg(onConnectError, "connect error") as Error;
       expect(error?.message).toBe("gateway client stopped");
     });
@@ -1582,7 +1653,7 @@ describe("GatewayClient connect auth payload", () => {
       "Authorization: Bearer sk-testsecret1234567890abcd wss://user:pass@gateway.example/ws?token=secret-token", // pragma: allowlist secret
     );
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(logErrorMock).toHaveBeenCalledWith(expect.stringContaining("gateway connect failed:"));
     });
     const logged = String(logErrorMock.mock.calls.at(-1)?.[0] ?? "");
@@ -1608,7 +1679,7 @@ describe("GatewayClient connect auth payload", () => {
       "wss://gateway.example/ws?token=secret-token failed with 401 from remote gateway", // pragma: allowlist secret
     );
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(logErrorMock).toHaveBeenCalledWith(expect.stringContaining("gateway connect failed:"));
     });
     const logged = String(logErrorMock.mock.calls.at(-1)?.[0] ?? "");
@@ -1634,7 +1705,7 @@ describe("GatewayClient connect auth payload", () => {
       "Authorization: Bearer sk-disabledredaction1234567890abcd", // pragma: allowlist secret
     );
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(logErrorMock).toHaveBeenCalledWith(expect.stringContaining("gateway connect failed:"));
     });
     const logged = String(logErrorMock.mock.calls.at(-1)?.[0] ?? "");

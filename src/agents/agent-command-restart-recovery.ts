@@ -11,6 +11,7 @@ import {
   hasVisibleCommittedMessagingToolDeliveryEvidence,
   type AgentDeliveryEvidence,
 } from "./embedded-agent-runner/delivery-evidence.js";
+import { mergeAttemptToolMediaPayloads } from "./embedded-agent-runner/run/tool-media-payloads.js";
 
 function normalizeOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -77,9 +78,48 @@ export function constrainRestartRecoveryDeliveryPayloads(
   const exactMediaUrls = Array.from(
     new Set(mediaUrls.map((url) => url.trim()).filter((url) => url.length > 0)),
   );
-  if (exactMediaUrls.length > 0) {
-    constrained.push({ mediaUrls: exactMediaUrls, trustedLocalMedia: true });
+  if (exactMediaUrls.length === 0) {
+    return constrained;
   }
+
+  if (!suppressText) {
+    const visibleReplyIndex = constrained.findIndex(
+      (payload) =>
+        payload.isCommentary !== true &&
+        payload.isCompactionNotice !== true &&
+        payload.isFallbackNotice !== true &&
+        payload.isStatusNotice !== true &&
+        hasVisibleAgentPayload(
+          { payloads: [payload] },
+          {
+            includeErrorPayloads: false,
+            includeReasoningPayloads: false,
+            includeSilentReplyPayloads: false,
+          },
+        ),
+    );
+    if (visibleReplyIndex >= 0) {
+      const visibleReply = constrained[visibleReplyIndex];
+      if (visibleReply) {
+        // Recovery owns the exact artifacts; merge them with the actual final
+        // reply so automatic delivery cannot emit a caption before its media.
+        const [mergedReply] =
+          mergeAttemptToolMediaPayloads({
+            payloads: [visibleReply],
+            toolMediaUrls: exactMediaUrls,
+            hostOwnedToolMediaUrls: exactMediaUrls,
+            toolTrustedLocalMedia: true,
+            sourceReplyDeliveryMode: "automatic",
+          }) ?? [];
+        if (mergedReply) {
+          constrained[visibleReplyIndex] = mergedReply;
+          return constrained;
+        }
+      }
+    }
+  }
+
+  constrained.push({ mediaUrls: exactMediaUrls, trustedLocalMedia: true });
   return constrained;
 }
 
@@ -281,6 +321,7 @@ export function buildCurrentRunRestartRecoveryClaim(params: {
   entry: SessionEntry;
   forceRestartSafeTools?: boolean;
   runId: string;
+  sourceIngress?: SessionEntry["restartRecoverySourceIngress"];
   sourceRunId?: string;
   sourceReplyDeliveryMode?: SessionEntry["restartRecoverySourceReplyDeliveryMode"];
   suppressTextDelivery?: boolean;
@@ -292,6 +333,7 @@ export function buildCurrentRunRestartRecoveryClaim(params: {
   | "restartRecoveryDeliveryRunId"
   | "restartRecoveryDeliverySourceRunId"
   | "restartRecoveryForceSafeTools"
+  | "restartRecoverySourceIngress"
   | "restartRecoverySourceReplyDeliveryMode"
   | "restartRecoverySuppressTextDelivery"
 > {
@@ -308,6 +350,9 @@ export function buildCurrentRunRestartRecoveryClaim(params: {
   const createsTranscriptOnlySourceClaim =
     params.sourceRunId !== undefined && params.deliveryContext === undefined;
   const createsScopedDeliveryClaim = params.sourceRunId !== undefined;
+  if (!adoptsExistingClaim && createsScopedDeliveryClaim && !params.sourceIngress) {
+    throw new Error("restart recovery source ownership is required for a new claim");
+  }
   return {
     restartRecoveryDeliveryContext: adoptsExistingClaim
       ? params.entry.restartRecoveryDeliveryContext
@@ -334,6 +379,11 @@ export function buildCurrentRunRestartRecoveryClaim(params: {
     restartRecoveryDeliverySourceRunId: adoptsExistingClaim
       ? params.entry.restartRecoveryDeliverySourceRunId
       : params.sourceRunId,
+    restartRecoverySourceIngress: adoptsExistingClaim
+      ? params.entry.restartRecoverySourceIngress
+      : createsScopedDeliveryClaim
+        ? params.sourceIngress
+        : undefined,
     restartRecoverySourceReplyDeliveryMode: adoptsExistingClaim
       ? params.entry.restartRecoverySourceReplyDeliveryMode
       : params.sourceRunId

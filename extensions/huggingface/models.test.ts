@@ -54,6 +54,12 @@ describe("huggingface models", () => {
     expect(def.maxTokens).toBe(entry.maxTokens);
   });
 
+  it("does not advertise the retired Llama 3.3 Turbo route", () => {
+    expect(HUGGINGFACE_MODEL_CATALOG.map((model) => model.id)).not.toContain(
+      "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    );
+  });
+
   it("discoverHuggingfaceModels returns static catalog when apiKey is empty", async () => {
     const models = await discoverHuggingfaceModels("");
     expect(models).toHaveLength(HUGGINGFACE_MODEL_CATALOG.length);
@@ -117,6 +123,25 @@ describe("huggingface models", () => {
     expect(timeoutSpy).toHaveBeenCalledWith(MAX_TIMER_TIMEOUT_MS);
   });
 
+  it("cancels the response body before falling back after an HTTP error", async () => {
+    process.env.VITEST = "false";
+    process.env.NODE_ENV = "development";
+    stubAbortSignalTimeout();
+    const response = new Response("unavailable", { status: 503 });
+    const cancel = vi.spyOn(response.body!, "cancel");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response),
+    );
+
+    const models = await discoverHuggingfaceModels("hf_test_token");
+
+    expect(models.map((model) => model.id)).toEqual(
+      HUGGINGFACE_MODEL_CATALOG.map((model) => model.id),
+    );
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to the static catalog when the discovery response exceeds the byte cap", async () => {
     process.env.VITEST = "false";
     process.env.NODE_ENV = "development";
@@ -139,7 +164,7 @@ describe("huggingface models", () => {
     expect(models.map((m) => m.id)).toEqual(HUGGINGFACE_MODEL_CATALOG.map((m) => m.id));
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(releaseLock).toHaveBeenCalledTimes(1);
-    expect(read).toHaveBeenCalledTimes(17);
+    expect(read).toHaveBeenCalledTimes(5);
   });
 
   it("parses a valid bounded discovery response", async () => {

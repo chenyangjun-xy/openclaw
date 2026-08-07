@@ -113,6 +113,40 @@ export type ProviderAuthMethodNonInteractiveContext = {
   ) => ApiKeyCredential | null;
 };
 
+type ProviderAuthMethodNonInteractiveValidationContext = Omit<
+  ProviderAuthMethodNonInteractiveContext,
+  "toApiKeyCredential"
+>;
+
+/** Read-only context for app-guided discovery of already available inference. */
+export type ProviderAppGuidedSetupContext = {
+  config: OpenClawConfig;
+  env: NodeJS.ProcessEnv;
+  workspaceDir?: string;
+  signal?: AbortSignal;
+};
+
+export type ProviderAppGuidedSetupCandidate = {
+  /** Canonical provider/model reference returned unchanged during activation. */
+  modelRef: string;
+  /** Optional provider-owned detail shown beside the auth-choice label. */
+  detail?: string;
+};
+
+export type ProviderAppGuidedSetup = {
+  /**
+   * Report whether the provider's local service is reachable, even when no
+   * model is suitable for automatic activation. This probe must be read-only.
+   */
+  detectAvailability?: (ctx: ProviderAppGuidedSetupContext) => Promise<boolean>;
+  /** Detection is read-only: no model pull, download, login, or config write. */
+  detect: (ctx: ProviderAppGuidedSetupContext) => Promise<ProviderAppGuidedSetupCandidate | null>;
+  /** Recheck one detected model and return the config required for a live probe. */
+  prepare: (
+    ctx: ProviderAppGuidedSetupContext & { modelRef: string },
+  ) => Promise<ProviderAuthResult | null>;
+};
+
 export type ProviderAuthMethod = {
   id: string;
   label: string;
@@ -132,6 +166,12 @@ export type ProviderAuthMethod = {
   runNonInteractive?: (
     ctx: ProviderAuthMethodNonInteractiveContext,
   ) => Promise<OpenClawConfig | null>;
+  /** Side-effect-free prerequisite validation used before destructive reset handling. */
+  validateNonInteractive?: (
+    ctx: ProviderAuthMethodNonInteractiveValidationContext,
+  ) => Promise<boolean>;
+  /** Provider-owned local model discovery for the shared guided setup ladder. */
+  appGuidedSetup?: ProviderAppGuidedSetup;
 };
 
 export type ProviderPluginWizardSetup = {

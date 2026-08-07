@@ -4,14 +4,12 @@ scenario:
   surface: channels
   coverage:
     primary:
-      - channels.access-policy
+      - matrix.mention-gates
   execution:
-    profiles: { "matrix:all": 43, "matrix:transport": 42 }
     kind: flow
     channel: matrix
     timeoutMs: 8000
     retryCount: 0
-    driver: live
     config:
       matrixConfigOverrides:
         allowBots: true

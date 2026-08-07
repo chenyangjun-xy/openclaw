@@ -1,5 +1,6 @@
 // Covers outbound message send/poll orchestration, target resolution, durable
 // capability checks, gateway fallback, dry runs, and payload planning.
+import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -74,12 +75,7 @@ beforeAll(async () => {
   ({ sendMessage } = await import("./message.js"));
 });
 
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`expected ${label} to be an object`);
-  }
-  return value as Record<string, unknown>;
-}
+const requireRecord = createRequireRecord("record", "expected-label-object");
 
 function expectRecordFields(
   value: unknown,
@@ -335,6 +331,52 @@ describe("sendMessage", () => {
       },
       "durable delivery requirements",
     );
+  });
+
+  it("can require queue persistence without provider unknown-send reconciliation", async () => {
+    const onDeliveryIntent = vi.fn();
+    const onDeliveryResult = vi.fn();
+
+    await sendMessage({
+      cfg: {},
+      channel: "forum",
+      to: "123456",
+      content: "conversation delivery",
+      queuePolicy: "required",
+      requireUnknownSendReconciliation: false,
+      deliveryIntentId: "operation-1",
+      deliveryCompletion: {
+        kind: "conversation",
+        agentId: "main",
+        operationId: "operation-1",
+      },
+      onDeliveryIntent,
+      onDeliveryResult,
+    });
+
+    const deliveryParams = expectDeliveryCallFields({
+      queuePolicy: "required",
+      deliveryIntentId: "operation-1",
+      deliveryCompletion: {
+        kind: "conversation",
+        agentId: "main",
+        operationId: "operation-1",
+      },
+      onDeliveryResult,
+    });
+    const wrappedIntent = deliveryParams.onDeliveryIntent as
+      | ((intent: { id: string; channel: "forum"; to: string; queuePolicy: "required" }) => void)
+      | undefined;
+    wrappedIntent?.({
+      id: "queue-1",
+      channel: "forum",
+      to: "123456",
+      queuePolicy: "required",
+    });
+    expect(onDeliveryIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "queue-1", durability: "required" }),
+    );
+    expect(mocks.resolveOutboundDurableFinalDeliverySupport).not.toHaveBeenCalled();
   });
 
   it("rejects required durable sends before enqueue when replay safety is unsupported", async () => {

@@ -8,12 +8,16 @@ export function makeQaSuiteTestScenario(
   id: string,
   params: {
     channel?: string;
-    driver?: QaSuiteTestScenario["execution"]["driver"];
     config?: Record<string, unknown>;
     plugins?: string[];
     gatewayConfigPatch?: Record<string, unknown>;
-    gatewayRuntime?: { forwardHostHome?: boolean; preserveDebugArtifacts?: boolean };
-    runtimeParityTier?: QaSuiteTestScenario["runtimeParityTier"];
+    gatewayRuntime?: {
+      allowUnhealthyStartup?: boolean;
+      forwardHostHome?: boolean;
+      preserveDebugArtifacts?: boolean;
+    };
+    flowKind?: "module" | "steps";
+    runtimePairLane?: QaSuiteTestScenario["runtimePairLane"];
     suiteIsolation?: "isolated";
     surface?: string;
     transportPolicy?: QaTransportPolicy;
@@ -25,7 +29,7 @@ export function makeQaSuiteTestScenario(
     surface: params.surface ?? "test",
     objective: "test",
     successCriteria: ["test"],
-    ...(params.runtimeParityTier ? { runtimeParityTier: params.runtimeParityTier } : {}),
+    ...(params.runtimePairLane ? { runtimePairLane: params.runtimePairLane } : {}),
     ...(params.plugins ? { plugins: params.plugins } : {}),
     ...(params.gatewayConfigPatch ? { gatewayConfigPatch: params.gatewayConfigPatch } : {}),
     ...(params.gatewayRuntime ? { gatewayRuntime: params.gatewayRuntime } : {}),
@@ -33,10 +37,10 @@ export function makeQaSuiteTestScenario(
     execution: {
       kind: "flow",
       ...(params.channel ? { channel: params.channel } : {}),
-      ...(params.driver ? { driver: params.driver } : {}),
       ...(params.suiteIsolation ? { suiteIsolation: params.suiteIsolation } : {}),
       ...(params.transportPolicy ? { transportPolicy: params.transportPolicy } : {}),
       ...(params.config ? { config: params.config } : {}),
+      flowKind: params.flowKind ?? "steps",
       flow: { steps: [{ name: "noop", actions: [{ assert: "true" }] }] },
     },
   } as QaSuiteTestScenario;

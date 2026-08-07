@@ -1,5 +1,6 @@
 // Covers outbound send service plugin/core routing, media access scoping,
 // transcript mirroring, and poll fallback.
+import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
@@ -63,7 +64,10 @@ const resolveAgentScopedOutboundMediaAccessMock = vi.hoisted(() =>
   })),
 );
 const appendAssistantMessageToSessionTranscriptMock = vi.hoisted(() =>
-  vi.fn(async () => ({ ok: true, sessionFile: "x" })),
+  vi.fn(async () => ({
+    ok: true,
+    target: { sessionId: "x", sessionKey: "x", storePath: "/tmp/sessions.json" },
+  })),
 );
 
 const mocks = {
@@ -117,12 +121,7 @@ type MockCalls = {
   mock: { calls: unknown[][] };
 };
 
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object") {
-    throw new Error(`expected ${label}`);
-  }
-  return value as Record<string, unknown>;
-}
+const requireRecord = createRequireRecord("object", "expected-label");
 
 function requireArray(value: unknown, label: string): unknown[] {
   expect(Array.isArray(value), label).toBe(true);
@@ -274,6 +273,74 @@ describe("executeSendAction", () => {
       channel: "demo-outbound",
       to: "channel:123",
       content: "hello",
+    });
+  });
+
+  it("reports delivery-layer effective text instead of the pre-adapter message", async () => {
+    mocks.dispatchChannelMessageAction.mockResolvedValue(null);
+    mocks.sendMessage.mockImplementationOnce(async (params: unknown) => {
+      const sendParams = requireRecord(params, "send message params");
+      const onDeliveredPayload = sendParams.onDeliveredPayload;
+      expect(onDeliveredPayload).toBeTypeOf("function");
+      (onDeliveredPayload as (payload: { text: string; mediaUrls: string[] }) => void)({
+        text: "[Peer] hello",
+        mediaUrls: [],
+      });
+      return {
+        channel: "demo-outbound",
+        to: "channel:123",
+        via: "direct" as const,
+        mediaUrl: null,
+        deliveryStatus: "sent" as const,
+      };
+    });
+
+    const result = await executeSendAction({
+      ctx: {
+        cfg: {},
+        channel: "demo-outbound",
+        params: { to: "channel:123", message: "hello" },
+        dryRun: false,
+      },
+      to: "channel:123",
+      message: "hello",
+    });
+
+    expect(result.deliveredText).toBe("[Peer] hello");
+  });
+
+  it("makes required queue persistence force core delivery and lifecycle callbacks", async () => {
+    const onDeliveryIntent = vi.fn();
+    const onDeliveryResult = vi.fn();
+    mocks.dispatchChannelMessageAction.mockResolvedValue(pluginActionResult("msg-plugin"));
+    mocks.sendMessage.mockResolvedValue({
+      channel: "demo-outbound",
+      to: "channel:123",
+      via: "direct",
+      mediaUrl: null,
+      deliveryStatus: "sent",
+    });
+
+    await executeSendAction({
+      ctx: {
+        cfg: {},
+        channel: "demo-outbound",
+        params: { to: "channel:123", message: "hello" },
+        dryRun: false,
+        requireQueuePersistence: true,
+        onDeliveryIntent,
+        onDeliveryResult,
+      },
+      to: "channel:123",
+      message: "hello",
+    });
+
+    expect(mocks.dispatchChannelMessageAction).not.toHaveBeenCalled();
+    expectSingleCallFields(mocks.sendMessage, {
+      queuePolicy: "required",
+      requireUnknownSendReconciliation: false,
+      onDeliveryIntent,
+      onDeliveryResult,
     });
   });
 
@@ -719,6 +786,7 @@ describe("executeSendAction", () => {
     });
 
     expect(result.handledBy).toBe("plugin");
+    expect(result.deliveredText).toBeUndefined();
     expect(mocks.dispatchChannelMessageAction).toHaveBeenCalledTimes(1);
     expect(mocks.sendMessage).not.toHaveBeenCalled();
   });

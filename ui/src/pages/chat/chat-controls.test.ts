@@ -8,10 +8,6 @@ import { renderChatControls } from "./components/chat-controls.ts";
 
 type ChatControlsProps = Parameters<typeof renderChatControls>[0];
 
-vi.mock("../../components/icons.ts", () => ({
-  icons: {},
-}));
-
 function createSettings(): UiSettings {
   return {
     gatewayUrl: "ws://localhost:18789",
@@ -22,11 +18,10 @@ function createSettings(): UiSettings {
     themeMode: "dark",
     chatShowThinking: true,
     chatShowToolCalls: true,
-    chatPersistCommentary: false,
-    splitRatio: 0.6,
+    chatPersistCommentary: true,
     navCollapsed: false,
     navWidth: 280,
-    sidebarPinnedRoutes: ["workboard", "tasks"],
+    sidebarEntries: ["route:workboard", "route:tasks"],
   };
 }
 
@@ -46,6 +41,7 @@ function createProps(overrides: Record<string, unknown> = {}): ChatControlsProps
       stream: null,
     },
     onboarding: false,
+    preferencesBrowserOnly: false,
     settings: createSettings(),
     viewMenuOpen: true,
     onSettingsChange: () => undefined,
@@ -73,7 +69,7 @@ describe("chat composer view menu", () => {
       t("chat.view.toolCalls"),
       t("chat.view.commentary"),
     ]);
-    expect(items.map((item) => item.checked)).toEqual([true, true, false]);
+    expect(items.map((item) => item.checked)).toEqual([true, true, true]);
   });
 
   it("toggles settings from the menu rows", () => {
@@ -102,7 +98,16 @@ describe("chat composer view menu", () => {
     );
     select(commentary!);
     expect(onSettingsChange).toHaveBeenLastCalledWith(
-      expect.objectContaining({ chatPersistCommentary: true }),
+      expect.objectContaining({ chatPersistCommentary: false }),
+    );
+  });
+
+  it("labels read-only preference changes as browser-local", () => {
+    const container = document.createElement("div");
+    render(renderChatControls(createProps({ preferencesBrowserOnly: true })), container);
+
+    expect(container.querySelector(".chat-view-menu__provenance")?.textContent?.trim()).toBe(
+      t("quickSettings.personal.browserOnly"),
     );
   });
 
@@ -114,7 +119,7 @@ describe("chat composer view menu", () => {
     const items = menuItems(container);
     expect(items.every((item) => item.disabled)).toBe(true);
     // Onboarding forces thinking hidden and tool calls visible.
-    expect(items.map((item) => item.checked)).toEqual([false, true, false]);
+    expect(items.map((item) => item.checked)).toEqual([false, true, true]);
     container.querySelector("wa-dropdown")?.dispatchEvent(
       new CustomEvent("wa-select", {
         bubbles: true,

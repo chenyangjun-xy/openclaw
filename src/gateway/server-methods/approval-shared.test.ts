@@ -64,111 +64,127 @@ describe("handlePendingApprovalRequest", () => {
     hasApprovalTurnSourceRouteMock.mockClear();
   });
 
-  it("allows operator.admin clients to see requester-bound approvals", () => {
-    const manager = new ExecApprovalManager();
-    const record = manager.create(
-      {
-        command: "echo ok",
-      },
-      60_000,
-      "approval-admin-visible",
-    );
-    record.requestedByDeviceId = "device-owner";
-    record.requestedByConnId = "conn-owner";
-    record.requestedByClientId = "client-owner";
-
-    expect(
-      isApprovalRecordVisibleToClient({
-        record,
-        client: createApprovalClient({
-          connId: "conn-admin",
-          clientId: "client-admin",
-          deviceId: "device-admin",
-          scopes: ["operator.admin"],
-        }),
-      }),
-    ).toBe(true);
-  });
-
-  it("does not allow approval-scoped clients to see no-device gateway-client approvals from another connection", () => {
-    const manager = new ExecApprovalManager();
-    const record = manager.create(
-      {
-        command: "echo ok",
-      },
-      60_000,
-      "approval-gateway-client-visible",
-    );
-    record.requestedByConnId = "conn-gateway";
-    record.requestedByClientId = GATEWAY_CLIENT_IDS.GATEWAY_CLIENT;
-
-    expect(
-      isApprovalRecordVisibleToClient({
-        record,
-        client: createApprovalClient({
-          connId: "conn-mobile",
-          clientId: GATEWAY_CLIENT_IDS.IOS_APP,
-          scopes: ["operator.approvals"],
-        }),
-      }),
-    ).toBe(false);
-  });
-
   it.each([
-    ["Control UI", GATEWAY_CLIENT_IDS.CONTROL_UI],
-    ["WebChat UI", GATEWAY_CLIENT_IDS.WEBCHAT_UI],
-    ["WebChat", GATEWAY_CLIENT_IDS.WEBCHAT],
-  ])(
-    "does not allow approval-scoped clients to see no-device %s approvals from another connection",
-    (_label, clientId) => {
-      const manager = new ExecApprovalManager();
-      const record = manager.create(
-        {
-          command: "echo ok",
-        },
-        60_000,
-        `approval-${clientId}-visible`,
-      );
-      record.requestedByConnId = "conn-browser-ui";
-      record.requestedByClientId = clientId;
-
-      expect(
-        isApprovalRecordVisibleToClient({
-          record,
-          client: createApprovalClient({
-            connId: "conn-mobile",
-            clientId: GATEWAY_CLIENT_IDS.IOS_APP,
-            scopes: ["operator.approvals"],
-          }),
-        }),
-      ).toBe(false);
-    },
-  );
-
-  it("does not allow approval-scoped clients to see device-bound gateway-client approvals from another device", () => {
-    const manager = new ExecApprovalManager();
-    const record = manager.create(
-      {
-        command: "echo ok",
+    {
+      name: "allows operator.admin clients to see requester-bound approvals",
+      recordId: "approval-admin-visible",
+      requestedBy: {
+        requestedByDeviceId: "device-owner",
+        requestedByConnId: "conn-owner",
+        requestedByClientId: "client-owner",
       },
-      60_000,
-      "approval-gateway-device-visible",
-    );
-    record.requestedByDeviceId = "device-gateway";
-    record.requestedByConnId = "conn-gateway";
-    record.requestedByClientId = GATEWAY_CLIENT_IDS.GATEWAY_CLIENT;
+      client: {
+        connId: "conn-admin",
+        clientId: "client-admin",
+        deviceId: "device-admin",
+        scopes: ["operator.admin"],
+      },
+      expected: true,
+    },
+    {
+      name: "does not allow approval-scoped clients to see no-device gateway-client approvals from another connection",
+      recordId: "approval-gateway-client-visible",
+      requestedBy: {
+        requestedByConnId: "conn-gateway",
+        requestedByClientId: GATEWAY_CLIENT_IDS.GATEWAY_CLIENT,
+      },
+      client: {
+        connId: "conn-mobile",
+        clientId: GATEWAY_CLIENT_IDS.IOS_APP,
+        scopes: ["operator.approvals"],
+      },
+      expected: false,
+    },
+    ...[
+      ["Control UI", GATEWAY_CLIENT_IDS.CONTROL_UI],
+      ["WebChat UI", GATEWAY_CLIENT_IDS.WEBCHAT_UI],
+      ["WebChat", GATEWAY_CLIENT_IDS.WEBCHAT],
+    ].map(([label, clientId]) => ({
+      name: `does not allow approval-scoped clients to see no-device ${label} approvals from another connection`,
+      recordId: `approval-${clientId}-visible`,
+      requestedBy: {
+        requestedByConnId: "conn-browser-ui",
+        requestedByClientId: clientId,
+      },
+      client: {
+        connId: "conn-mobile",
+        clientId: GATEWAY_CLIENT_IDS.IOS_APP,
+        scopes: ["operator.approvals"],
+      },
+      expected: false,
+    })),
+    {
+      name: "does not allow approval-scoped clients to see device-bound gateway-client approvals from another device",
+      recordId: "approval-gateway-device-visible",
+      requestedBy: {
+        requestedByDeviceId: "device-gateway",
+        requestedByConnId: "conn-gateway",
+        requestedByClientId: GATEWAY_CLIENT_IDS.GATEWAY_CLIENT,
+      },
+      client: {
+        connId: "conn-mobile",
+        clientId: GATEWAY_CLIENT_IDS.IOS_APP,
+        deviceId: "device-mobile",
+        scopes: ["operator.approvals"],
+      },
+      expected: false,
+    },
+    {
+      name: "allows gateway-client approval runtimes to see requester-bound approvals",
+      recordId: "approval-delivery-runtime-visible",
+      requestedBy: {
+        requestedByDeviceId: "device-owner",
+        requestedByConnId: "conn-owner",
+        requestedByClientId: "client-owner",
+      },
+      client: {
+        connId: "conn-delivery-runtime",
+        clientId: GATEWAY_CLIENT_IDS.GATEWAY_CLIENT,
+        scopes: ["operator.approvals"],
+        approvalRuntime: true,
+      },
+      expected: true,
+    },
+    {
+      name: "does not trust gateway-client ids without the approval runtime marker",
+      recordId: "approval-delivery-runtime-spoof-hidden",
+      requestedBy: {
+        requestedByDeviceId: "device-owner",
+        requestedByConnId: "conn-owner",
+        requestedByClientId: "client-owner",
+      },
+      client: {
+        connId: "conn-spoofed-runtime",
+        clientId: GATEWAY_CLIENT_IDS.GATEWAY_CLIENT,
+        scopes: ["operator.approvals"],
+      },
+      expected: false,
+    },
+    {
+      name: "does not widen non-gateway no-device approvals to matching client ids",
+      recordId: "approval-other-client-hidden",
+      requestedBy: {
+        requestedByConnId: "conn-requester",
+        requestedByClientId: "client-owner",
+      },
+      client: {
+        connId: "conn-mobile",
+        clientId: "client-owner",
+        scopes: ["operator.approvals"],
+      },
+      expected: false,
+    },
+  ])("$name", ({ recordId, requestedBy, client, expected }) => {
+    const manager = new ExecApprovalManager();
+    const record = manager.create({ command: "echo ok" }, 60_000, recordId);
+    Object.assign(record, requestedBy);
 
     expect(
       isApprovalRecordVisibleToClient({
         record,
-        client: createApprovalClient({
-          connId: "conn-mobile",
-          clientId: GATEWAY_CLIENT_IDS.IOS_APP,
-          deviceId: "device-mobile",
-          scopes: ["operator.approvals"],
-        }),
+        client: createApprovalClient(client),
       }),
-    ).toBe(false);
+    ).toBe(expected);
   });
 
   it("allows approval-scoped reviewer devices to see approvals requested by the backend runtime", () => {
@@ -247,81 +263,6 @@ describe("handlePendingApprovalRequest", () => {
           connId: "conn-other",
           clientId: GATEWAY_CLIENT_IDS.IOS_APP,
           deviceId: "device-other",
-          scopes: ["operator.approvals"],
-        }),
-      }),
-    ).toBe(false);
-  });
-
-  it("allows gateway-client approval runtimes to see requester-bound approvals", () => {
-    const manager = new ExecApprovalManager();
-    const record = manager.create(
-      {
-        command: "echo ok",
-      },
-      60_000,
-      "approval-delivery-runtime-visible",
-    );
-    record.requestedByDeviceId = "device-owner";
-    record.requestedByConnId = "conn-owner";
-    record.requestedByClientId = "client-owner";
-
-    expect(
-      isApprovalRecordVisibleToClient({
-        record,
-        client: createApprovalClient({
-          connId: "conn-delivery-runtime",
-          clientId: GATEWAY_CLIENT_IDS.GATEWAY_CLIENT,
-          scopes: ["operator.approvals"],
-          approvalRuntime: true,
-        }),
-      }),
-    ).toBe(true);
-  });
-
-  it("does not trust gateway-client ids without the approval runtime marker", () => {
-    const manager = new ExecApprovalManager();
-    const record = manager.create(
-      {
-        command: "echo ok",
-      },
-      60_000,
-      "approval-delivery-runtime-spoof-hidden",
-    );
-    record.requestedByDeviceId = "device-owner";
-    record.requestedByConnId = "conn-owner";
-    record.requestedByClientId = "client-owner";
-
-    expect(
-      isApprovalRecordVisibleToClient({
-        record,
-        client: createApprovalClient({
-          connId: "conn-spoofed-runtime",
-          clientId: GATEWAY_CLIENT_IDS.GATEWAY_CLIENT,
-          scopes: ["operator.approvals"],
-        }),
-      }),
-    ).toBe(false);
-  });
-
-  it("does not widen non-gateway no-device approvals to matching client ids", () => {
-    const manager = new ExecApprovalManager();
-    const record = manager.create(
-      {
-        command: "echo ok",
-      },
-      60_000,
-      "approval-other-client-hidden",
-    );
-    record.requestedByConnId = "conn-requester";
-    record.requestedByClientId = "client-owner";
-
-    expect(
-      isApprovalRecordVisibleToClient({
-        record,
-        client: createApprovalClient({
-          connId: "conn-mobile",
-          clientId: "client-owner",
           scopes: ["operator.approvals"],
         }),
       }),
@@ -434,6 +375,7 @@ describe("handlePendingApprovalRequest", () => {
     );
     const decisionPromise = manager.register(record, 60_000);
     const respond = vi.fn();
+    const getApprovalClientConnIds = vi.fn(() => new Set<string>());
     const requestPromise = handlePendingApprovalRequest({
       manager,
       record,
@@ -441,6 +383,8 @@ describe("handlePendingApprovalRequest", () => {
       respond,
       context: {
         broadcast: vi.fn(),
+        broadcastToConnIds: vi.fn(),
+        getApprovalClientConnIds,
         hasExecApprovalClients: () => false,
       } as unknown as GatewayRequestContext,
       requestEventName: "plugin.approval.requested",
@@ -456,6 +400,9 @@ describe("handlePendingApprovalRequest", () => {
     });
 
     await Promise.resolve();
+    expect(getApprovalClientConnIds).toHaveBeenCalledWith(
+      expect.objectContaining({ approvalKind: "plugin" }),
+    );
     expect(hasApprovalTurnSourceRouteMock).toHaveBeenCalledWith({
       turnSourceChannel: "whatsapp",
       turnSourceAccountId: "default",
@@ -1145,6 +1092,7 @@ describe("handlePendingApprovalRequest", () => {
     const respond = vi.fn();
 
     await handleApprovalResolve({
+      approvalKind: "exec",
       manager,
       inputId: record.id,
       decision: "allow-once",
@@ -1157,12 +1105,6 @@ describe("handlePendingApprovalRequest", () => {
         connId: "conn-other",
         clientId: "client-owner",
         scopes: ["operator.approvals"],
-      }),
-      resolvedEventName: "exec.approval.resolved",
-      buildResolvedEvent: ({ approvalId, decision, snapshot }) => ({
-        id: approvalId,
-        decision,
-        request: snapshot.request,
       }),
     });
 
@@ -1253,6 +1195,124 @@ describe("handlePendingApprovalRequest", () => {
     );
   });
 
+  it("releases run-aborted waiters without changing timeout terminal state", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-approval-wait-terminal-"));
+    const manager = new ExecApprovalManager({
+      approvalKind: "exec",
+      persistence: {
+        runtimeEpoch: "approval-shared-wait-terminal",
+        databaseOptions: { path: path.join(tempDir, "state.sqlite") },
+      },
+    });
+    const record = manager.create(
+      { command: "echo ok", runId: "run-aborted" },
+      60_000,
+      "approval-wait-run-aborted",
+    );
+    record.requestedByDeviceId = "device-owner";
+    record.requestedByConnId = "conn-owner";
+    record.requestedByClientId = "client-owner";
+    void manager.register(record, 60_000);
+    const respond = vi.fn();
+
+    const waiting = handleApprovalWaitDecision({
+      manager,
+      inputId: record.id,
+      respond,
+      client: createApprovalClient({
+        connId: "conn-owner-approval",
+        clientId: "client-owner",
+        deviceId: "device-owner",
+        scopes: ["operator.approvals"],
+      }),
+    });
+    expect(
+      manager.forceDenyDetailed(
+        record.id,
+        "run-aborted",
+        { kind: "system", id: null },
+        "cancelled",
+      ),
+    ).toMatchObject({ outcome: "denied" });
+    await waiting;
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        id: record.id,
+        decision: null,
+        terminalReason: "run-aborted",
+      }),
+      undefined,
+    );
+
+    const timeoutRecord = manager.create(
+      { command: "echo later", runId: "run-timeout" },
+      60_000,
+      "approval-wait-timeout",
+    );
+    timeoutRecord.requestedByDeviceId = "device-owner";
+    timeoutRecord.requestedByConnId = "conn-owner";
+    timeoutRecord.requestedByClientId = "client-owner";
+    void manager.register(timeoutRecord, 60_000);
+    const timeoutRespond = vi.fn();
+    const timeoutWaiting = handleApprovalWaitDecision({
+      manager,
+      inputId: timeoutRecord.id,
+      respond: timeoutRespond,
+      client: createApprovalClient({
+        connId: "conn-owner-approval",
+        clientId: "client-owner",
+        deviceId: "device-owner",
+      }),
+    });
+    expect(manager.expire(timeoutRecord.id)).toBe(true);
+    await timeoutWaiting;
+    expect(timeoutRespond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        id: timeoutRecord.id,
+        decision: null,
+        terminalReason: "timeout",
+      }),
+      undefined,
+    );
+
+    const allowedRecord = manager.create(
+      { command: "echo allowed", runId: "run-allowed-before-abort" },
+      60_000,
+      "approval-wait-allowed-before-abort",
+    );
+    allowedRecord.requestedByDeviceId = "device-owner";
+    allowedRecord.requestedByConnId = "conn-owner";
+    allowedRecord.requestedByClientId = "client-owner";
+    void manager.register(allowedRecord, 60_000);
+    expect(manager.resolve(allowedRecord.id, "allow-once")).toBe(true);
+    const allowedRespond = vi.fn();
+    await handleApprovalWaitDecision({
+      manager,
+      inputId: allowedRecord.id,
+      respond: allowedRespond,
+      client: createApprovalClient({
+        connId: "conn-owner-approval",
+        clientId: "client-owner",
+        deviceId: "device-owner",
+      }),
+      resolveTerminalReason: () => "run-aborted",
+    });
+    expect(allowedRespond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        id: allowedRecord.id,
+        decision: "allow-once",
+        terminalReason: "run-aborted",
+      }),
+      undefined,
+    );
+    closeOpenClawStateDatabaseForTest();
+    fs.rmSync(tempDir, { force: true, recursive: true });
+  });
+
   it("does not allow approval-scoped clients to resolve no-device gateway-client approvals from another connection", async () => {
     const manager = new ExecApprovalManager();
     const record = manager.create(
@@ -1270,6 +1330,7 @@ describe("handlePendingApprovalRequest", () => {
     const broadcastToConnIds = vi.fn();
 
     await handleApprovalResolve({
+      approvalKind: "exec",
       manager,
       inputId: record.id,
       decision: "allow-once",
@@ -1291,12 +1352,6 @@ describe("handlePendingApprovalRequest", () => {
         connId: "conn-mobile-approval",
         clientId: GATEWAY_CLIENT_IDS.IOS_APP,
         scopes: ["operator.approvals"],
-      }),
-      resolvedEventName: "exec.approval.resolved",
-      buildResolvedEvent: ({ approvalId, decision, snapshot }) => ({
-        id: approvalId,
-        decision,
-        request: snapshot.request,
       }),
     });
 
@@ -1328,6 +1383,7 @@ describe("handlePendingApprovalRequest", () => {
     const broadcastToConnIds = vi.fn();
 
     await handleApprovalResolve({
+      approvalKind: "exec",
       manager,
       inputId: record.id,
       decision: "allow-once",
@@ -1349,12 +1405,6 @@ describe("handlePendingApprovalRequest", () => {
         connId: "conn-mobile-approval",
         clientId: GATEWAY_CLIENT_IDS.IOS_APP,
         scopes: ["operator.approvals"],
-      }),
-      resolvedEventName: "exec.approval.resolved",
-      buildResolvedEvent: ({ approvalId, decision, snapshot }) => ({
-        id: approvalId,
-        decision,
-        request: snapshot.request,
       }),
     });
 
@@ -1387,6 +1437,7 @@ describe("handlePendingApprovalRequest", () => {
     const broadcastToConnIds = vi.fn();
 
     await handleApprovalResolve({
+      approvalKind: "exec",
       manager,
       inputId: record.id,
       decision: "allow-once",
@@ -1410,12 +1461,6 @@ describe("handlePendingApprovalRequest", () => {
         clientId: GATEWAY_CLIENT_IDS.IOS_APP,
         deviceId: "device-mobile",
         scopes: ["operator.approvals"],
-      }),
-      resolvedEventName: "exec.approval.resolved",
-      buildResolvedEvent: ({ approvalId, decision, snapshot }) => ({
-        id: approvalId,
-        decision,
-        request: snapshot.request,
       }),
     });
 
@@ -1448,6 +1493,7 @@ describe("handlePendingApprovalRequest", () => {
     const broadcastToConnIds = vi.fn();
 
     await handleApprovalResolve({
+      approvalKind: "exec",
       manager,
       inputId: record.id,
       decision: "allow-once",
@@ -1472,12 +1518,6 @@ describe("handlePendingApprovalRequest", () => {
         scopes: ["operator.approvals"],
         approvalRuntime: true,
       }),
-      resolvedEventName: "exec.approval.resolved",
-      buildResolvedEvent: ({ approvalId, decision, snapshot }) => ({
-        id: approvalId,
-        decision,
-        request: snapshot.request,
-      }),
     });
 
     expect(respond).toHaveBeenCalledWith(true, { ok: true }, undefined);
@@ -1501,6 +1541,7 @@ describe("handlePendingApprovalRequest", () => {
     const visibleConnIds = new Set(["conn-owner-approval"]);
 
     await handleApprovalResolve({
+      approvalKind: "exec",
       manager,
       inputId: record.id,
       decision: "allow-once",
@@ -1527,12 +1568,6 @@ describe("handlePendingApprovalRequest", () => {
         connId: "conn-owner-approval",
         clientId: "client-owner",
         deviceId: "device-owner",
-      }),
-      resolvedEventName: "exec.approval.resolved",
-      buildResolvedEvent: ({ approvalId, decision, snapshot }) => ({
-        id: approvalId,
-        decision,
-        request: snapshot.request,
       }),
     });
 
@@ -1659,6 +1694,7 @@ describe("handlePendingApprovalRequest", () => {
 
     try {
       await handleApprovalResolve({
+        approvalKind: "exec",
         manager,
         inputId: record.id,
         decision: "deny",
@@ -1669,12 +1705,6 @@ describe("handlePendingApprovalRequest", () => {
           logGateway: { error: logError },
         } as unknown as GatewayRequestContext,
         client: null,
-        resolvedEventName: "exec.approval.resolved",
-        buildResolvedEvent: ({ approvalId, decision, snapshot }) => ({
-          id: approvalId,
-          decision,
-          request: snapshot.request,
-        }),
       });
 
       expect(respond).toHaveBeenCalledWith(

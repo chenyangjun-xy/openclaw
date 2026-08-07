@@ -4,14 +4,12 @@ scenario:
   surface: channels
   coverage:
     primary:
-      - channels.access-and-identity
+      - security.redaction-artifact-safety
   execution:
-    profiles: { "matrix:all": 64, "matrix:e2ee-smoke": 6 }
     kind: flow
     channel: matrix
     timeoutMs: 150000
     retryCount: 0
-    driver: live
     config:
       matrixConfigOverrides:
         encryption: true

@@ -15,10 +15,12 @@ import {
   MEMORY_EMBEDDING_CACHE_TABLE,
   MEMORY_INDEX_VECTOR_TABLE,
   type MemorySessionSyncTarget,
+  type MemoryEntryProvenance,
   type MemorySource,
   type MemorySyncParams,
   type MemorySyncProgressUpdate,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import { runSqliteImmediateTransactionSync } from "openclaw/plugin-sdk/sqlite-runtime";
 import type { MemoryCoreAcquireLocalService } from "./embedding-local-service.js";
 import {
   resolveEmbeddingProviderAdapterId,
@@ -42,6 +44,10 @@ import {
   type MemoryIndexMeta,
   type MemoryIndexProviderIdentity,
 } from "./manager-reindex-state.js";
+import {
+  markMemoryVectorRebuildRequired,
+  requiresMemoryVectorRebuild,
+} from "./manager-vector-rebuild-state.js";
 import type { MemoryWatchSettleQueue } from "./watch-settle.js";
 
 export type MemorySyncProgressState = {
@@ -61,6 +67,7 @@ export type MemoryIndexEntry = {
   content?: string;
   contentText?: string;
   lineMap?: number[];
+  lineProvenance?: MemoryEntryProvenance[];
 };
 
 export type MemoryIndexWorkItem = {
@@ -74,19 +81,12 @@ export type MemorySourceSyncPlan = {
   finalize: () => Promise<void> | void;
 };
 
-type MemorySessionDeltaState = {
-  lastSize: number;
-  pendingBytes: number;
-  pendingMessages: number;
-};
-
 type MemoryReindexRetryState = {
   dirty: boolean;
   memoryFullRetryDirty: boolean;
   sessionsDirty: boolean;
   sessionsFullRetryDirty: boolean;
   sessionsDirtyFiles: Set<string>;
-  sessionDeltas: Map<string, MemorySessionDeltaState>;
 };
 
 export const MEMORY_INDEX_META_KEY = "memory_index_meta_v1";
@@ -94,6 +94,7 @@ const META_KEY = MEMORY_INDEX_META_KEY;
 const VECTOR_TABLE = MEMORY_INDEX_VECTOR_TABLE;
 const LEGACY_VECTOR_TABLE = "chunks_vec";
 const EMBEDDING_CACHE_TABLE = MEMORY_EMBEDDING_CACHE_TABLE;
+const EMBEDDING_CACHE_SEED_BATCH_SIZE = 1_000;
 const VECTOR_LOAD_TIMEOUT_MS = 30_000;
 const log = createSubsystemLogger("memory");
 
@@ -156,7 +157,6 @@ export abstract class MemoryManagerSyncBase {
   protected sessionsDirtyFiles = new Set<string>();
   protected sessionPendingFiles = new Set<string>();
   protected sessionPendingTargets = new Map<string, MemorySessionSyncTarget>();
-  protected sessionDeltas = new Map<string, MemorySessionDeltaState>();
   protected vectorDegradedWriteWarningShown = false;
   protected lastMetaSerialized: string | null = null;
 
@@ -207,9 +207,6 @@ export abstract class MemoryManagerSyncBase {
       sessionsDirty: this.sessionsDirty,
       sessionsFullRetryDirty: this.sessionsFullRetryDirty,
       sessionsDirtyFiles: new Set(this.sessionsDirtyFiles),
-      sessionDeltas: new Map(
-        Array.from(this.sessionDeltas, ([file, state]) => [file, { ...state }]),
-      ),
     };
   }
 
@@ -218,13 +215,6 @@ export abstract class MemoryManagerSyncBase {
     this.memoryFullRetryDirty = snapshot.memoryFullRetryDirty || this.memoryFullRetryDirty;
     this.sessionsFullRetryDirty = snapshot.sessionsFullRetryDirty || this.sessionsFullRetryDirty;
     this.sessionsDirtyFiles = new Set([...snapshot.sessionsDirtyFiles, ...this.sessionsDirtyFiles]);
-    const currentDeltas = this.sessionDeltas;
-    this.sessionDeltas = new Map(
-      Array.from(currentDeltas, ([file, state]) => [file, { ...state }]),
-    );
-    for (const [file, state] of snapshot.sessionDeltas) {
-      this.sessionDeltas.set(file, { ...state });
-    }
     this.sessionsDirty =
       snapshot.sessionsDirty ||
       this.sessionsDirty ||
@@ -267,6 +257,14 @@ export abstract class MemoryManagerSyncBase {
     );
   }
 
+  protected advanceSyncProgress(progress: MemorySyncProgressState | undefined, count = 1): void {
+    if (!progress) {
+      return;
+    }
+    progress.completed += count;
+    progress.report({ completed: progress.completed, total: progress.total });
+  }
+
   protected async indexQueuedFiles(
     items: MemoryIndexWorkItem[],
     progress?: MemorySyncProgressState,
@@ -286,13 +284,7 @@ export abstract class MemoryManagerSyncBase {
     for (const item of items) {
       item.afterIndex?.();
     }
-    if (progress) {
-      progress.completed += items.length;
-      progress.report({
-        completed: progress.completed,
-        total: progress.total,
-      });
-    }
+    this.advanceSyncProgress(progress, items.length);
   }
 
   protected async executeSourceSyncPlans(
@@ -486,6 +478,10 @@ export abstract class MemoryManagerSyncBase {
   }
 
   private async loadVectorExtension(): Promise<boolean> {
+    if (this.vector.available === true && this.hasVectorRebuildMarker()) {
+      this.markConfiguredSourcesForFullReindex();
+      return false;
+    }
     if (this.vector.available !== null) {
       return this.vector.available;
     }
@@ -503,6 +499,13 @@ export abstract class MemoryManagerSyncBase {
       }
       this.vector.extensionPath = loaded.extensionPath;
       this.vector.available = true;
+      if (this.hasVectorRebuildMarker()) {
+        // A skipped vector write/delete can leave both missing and extra rows.
+        // Refuse partial KNN results and let the normal shadow reindex rebuild all
+        // configured sources before this manager treats vectors as ready.
+        this.markConfiguredSourcesForFullReindex();
+        return false;
+      }
       if (this.dropLegacyVectorTable()) {
         // A broad dirty sync can skip unchanged files whose source hashes were
         // migrated. Force the next sync to republish the derived vector rows.
@@ -516,6 +519,53 @@ export abstract class MemoryManagerSyncBase {
       this.vector.loadError = message;
       log.warn(`sqlite-vec unavailable: ${message}`);
       return false;
+    }
+  }
+
+  protected deleteVectorRowsForSource(pathname: string, source: MemorySource): void {
+    if (!memoryTableExists(this.db, VECTOR_TABLE)) {
+      return;
+    }
+    if (!this.vector.enabled || this.vector.available !== true) {
+      this.markVectorRebuildRequired();
+      return;
+    }
+    try {
+      this.db
+        .prepare(
+          `DELETE FROM ${VECTOR_TABLE} WHERE id IN (
+             SELECT id FROM memory_index_chunks WHERE path = ? AND source = ?
+           )`,
+        )
+        .run(pathname, source);
+    } catch {
+      this.markVectorRebuildRequired();
+    }
+  }
+
+  protected markVectorRebuildRequired(): void {
+    markMemoryVectorRebuildRequired(this.db);
+  }
+
+  private hasVectorRebuildMarker(): boolean {
+    return requiresMemoryVectorRebuild({
+      db: this.db,
+      vectorTable: VECTOR_TABLE,
+      metaVectorDims: this.readMeta()?.vectorDims,
+      hasSemanticChunks: this.hasSemanticChunks(),
+    });
+  }
+
+  private markConfiguredSourcesForFullReindex(): void {
+    // This flag selects the shadow-reindex path even for a sessions-only index;
+    // the rebuild itself still filters work through the configured sources.
+    this.memoryFullRetryDirty = true;
+    if (this.sources.has("memory")) {
+      this.dirty = true;
+    }
+    if (this.sources.has("sessions")) {
+      this.sessionsDirty = true;
+      this.sessionsFullRetryDirty = true;
     }
   }
 
@@ -581,62 +631,63 @@ export abstract class MemoryManagerSyncBase {
     if (!this.cache.enabled) {
       return;
     }
-    let transactionStarted = false;
-    try {
-      const rows = sourceDb
-        .prepare(
-          `SELECT provider, model, provider_key, hash, embedding, dims, updated_at FROM ${EMBEDDING_CACHE_TABLE}`,
-        )
-        .iterate() as IterableIterator<{
-        provider: string;
-        model: string;
-        provider_key: string;
-        hash: string;
-        embedding: string;
-        dims: number | null;
-        updated_at: number;
-      }>;
-      let rowCount = 0;
-      let insert: ReturnType<DatabaseSync["prepare"]> | null = null;
-      for (const row of rows) {
-        if (!insert) {
-          insert = this.db.prepare(
-            `INSERT INTO ${EMBEDDING_CACHE_TABLE} (provider, model, provider_key, hash, embedding, dims, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(provider, model, provider_key, hash) DO UPDATE SET
-               embedding=excluded.embedding,
-               dims=excluded.dims,
-               updated_at=excluded.updated_at`,
-          );
-          this.db.exec("BEGIN");
-          transactionStarted = true;
-        }
-        insert.run(
-          row.provider,
-          row.model,
-          row.provider_key,
-          row.hash,
-          row.embedding,
-          row.dims,
-          row.updated_at,
-        );
-        rowCount += 1;
-        if (rowCount % 1000 === 0) {
-          await new Promise<void>((resolve) => {
-            setImmediate(resolve);
-          });
-        }
+    type CacheRow = {
+      rowid: number;
+      provider: string;
+      model: string;
+      provider_key: string;
+      hash: string;
+      embedding: string;
+      dims: number | null;
+      updated_at: number;
+    };
+    const selectBatch = sourceDb.prepare(
+      `SELECT rowid, provider, model, provider_key, hash, embedding, dims, updated_at
+       FROM ${EMBEDDING_CACHE_TABLE}
+       WHERE rowid > ?
+       ORDER BY rowid
+       LIMIT ?`,
+    );
+    const insert = this.db.prepare(
+      `INSERT INTO ${EMBEDDING_CACHE_TABLE} (provider, model, provider_key, hash, embedding, dims, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(provider, model, provider_key, hash) DO UPDATE SET
+         embedding=excluded.embedding,
+         dims=excluded.dims,
+         updated_at=excluded.updated_at`,
+    );
+    let lastRowid = 0;
+    while (true) {
+      // Materialize each source page so neither a read cursor nor a write
+      // transaction remains open when control returns to the event loop.
+      const batch = selectBatch.all(lastRowid, EMBEDDING_CACHE_SEED_BATCH_SIZE) as CacheRow[];
+      if (batch.length === 0) {
+        return;
       }
-      if (transactionStarted) {
-        this.db.exec("COMMIT");
+      runSqliteImmediateTransactionSync(
+        this.db,
+        () => {
+          for (const row of batch) {
+            insert.run(
+              row.provider,
+              row.model,
+              row.provider_key,
+              row.hash,
+              row.embedding,
+              row.dims,
+              row.updated_at,
+            );
+          }
+        },
+        { operationLabel: "memory.embedding-cache.seed" },
+      );
+      lastRowid = batch[batch.length - 1]?.rowid ?? lastRowid;
+      if (batch.length < EMBEDDING_CACHE_SEED_BATCH_SIZE) {
+        return;
       }
-    } catch (err) {
-      if (transactionStarted) {
-        try {
-          this.db.exec("ROLLBACK");
-        } catch {}
-      }
-      throw err;
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
     }
   }
 

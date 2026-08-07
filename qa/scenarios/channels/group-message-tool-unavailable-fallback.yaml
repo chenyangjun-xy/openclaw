@@ -5,10 +5,10 @@ scenario:
   surface: channel
   coverage:
     primary:
-      - channels.group-visible-replies
+      - channels.group-final-reply
+      - channels.message-final-reply
     secondary:
-      - channels.qa-channel
-      - tools.message
+      - channels.qa-channel-final-reply
   objective: Reproduce the group-visible-reply bug class where message_tool mode selected tool-only delivery even though group tool policy removed the message tool.
   gatewayConfigPatch:
     messages:
@@ -34,7 +34,7 @@ scenario:
   execution:
     kind: flow
     summary: Verify message_tool visible replies degrade to automatic delivery when the active group policy removes message.
-    driver: qa-channel
+    channel: qa-channel
     config:
       conversationId: qa-fallback-room
       promptSnippet: qa group message unavailable fallback check

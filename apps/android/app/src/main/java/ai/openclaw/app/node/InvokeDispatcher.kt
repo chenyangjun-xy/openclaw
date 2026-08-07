@@ -9,13 +9,36 @@ import ai.openclaw.app.protocol.OpenClawCanvasCommand
 import ai.openclaw.app.protocol.OpenClawContactsCommand
 import ai.openclaw.app.protocol.OpenClawDeviceCommand
 import ai.openclaw.app.protocol.OpenClawLocationCommand
+import ai.openclaw.app.protocol.OpenClawMobileUiCommand
 import ai.openclaw.app.protocol.OpenClawMotionCommand
 import ai.openclaw.app.protocol.OpenClawNotificationsCommand
 import ai.openclaw.app.protocol.OpenClawSmsCommand
 import ai.openclaw.app.protocol.OpenClawSystemCommand
 import ai.openclaw.app.protocol.OpenClawTalkCommand
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
+
+internal sealed interface NodeInvokeSessionKeyEnvelope {
+  data object Legacy : NodeInvokeSessionKeyEnvelope
+
+  data class Authoritative(
+    val sessionKey: String?,
+  ) : NodeInvokeSessionKeyEnvelope
+}
+
+private class NodeInvokeExecutionContext(
+  val sessionKeyEnvelope: NodeInvokeSessionKeyEnvelope,
+) : AbstractCoroutineContextElement(NodeInvokeExecutionContext) {
+  companion object Key : CoroutineContext.Key<NodeInvokeExecutionContext>
+}
+
+internal suspend fun currentNodeInvokeSessionKeyEnvelope(): NodeInvokeSessionKeyEnvelope =
+  currentCoroutineContext()[NodeInvokeExecutionContext]?.sessionKeyEnvelope
+    ?: NodeInvokeSessionKeyEnvelope.Legacy
 
 /** Runtime state for SMS search, split so permission prompts are not reported as hard unavailability. */
 internal enum class SmsSearchAvailabilityReason {
@@ -78,6 +101,7 @@ class InvokeDispatcher(
   private val a2uiHandler: A2UIHandler,
   private val debugHandler: DebugHandler,
   private val callLogHandler: CallLogHandler,
+  private val mobileUiHandler: MobileUiHandler,
   private val isForeground: () -> Boolean,
   private val cameraEnabled: () -> Boolean,
   private val locationEnabled: () -> Boolean,
@@ -93,10 +117,24 @@ class InvokeDispatcher(
   private val onCanvasA2uiReset: () -> Unit,
   private val motionActivityAvailable: () -> Boolean,
   private val motionPedometerAvailable: () -> Boolean,
+  private val mobileUiAvailable: () -> Boolean,
 ) {
   private val canvasCommandMutex = Mutex()
 
   /** Dispatches one gateway node.invoke command after foreground and availability gates pass. */
+  suspend fun handleInvoke(request: GatewaySession.InvokeRequest): GatewaySession.InvokeResult {
+    val sessionKeyEnvelope =
+      if (request.hasSessionKeyEnvelope) {
+        NodeInvokeSessionKeyEnvelope.Authoritative(request.sessionKey)
+      } else {
+        NodeInvokeSessionKeyEnvelope.Legacy
+      }
+    return withContext(NodeInvokeExecutionContext(sessionKeyEnvelope)) {
+      handleInvoke(request.command, request.paramsJson)
+    }
+  }
+
+  /** Dispatches one command for direct native callers that have no gateway attribution envelope. */
   suspend fun handleInvoke(
     command: String,
     paramsJson: String?,
@@ -258,6 +296,10 @@ class InvokeDispatcher(
       // CallLog command
       OpenClawCallLogCommand.Search.rawValue -> callLogHandler.handleCallLogSearch(paramsJson)
 
+      // Mobile accessibility commands
+      OpenClawMobileUiCommand.Observe.rawValue -> mobileUiHandler.handleObserve(paramsJson)
+      OpenClawMobileUiCommand.Act.rawValue -> mobileUiHandler.handleAct(paramsJson)
+
       // Debug commands
       "debug.ed25519" -> debugHandler.handleEd25519()
       "debug.logs" -> debugHandler.handleLogs()
@@ -377,6 +419,15 @@ class InvokeDispatcher(
           GatewaySession.InvokeResult.error(
             code = "INVALID_REQUEST",
             message = "INVALID_REQUEST: unknown command",
+          )
+        }
+      InvokeCommandAvailability.MobileUiAvailable ->
+        if (mobileUiAvailable()) {
+          null
+        } else {
+          GatewaySession.InvokeResult.error(
+            code = "MOBILE_UI_UNAVAILABLE",
+            message = "MOBILE_UI_UNAVAILABLE: accessibility service is not connected",
           )
         }
     }

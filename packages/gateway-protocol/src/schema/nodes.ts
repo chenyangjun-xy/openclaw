@@ -50,10 +50,15 @@ export const NodePresenceAlivePayloadSchema = closedObject({
 });
 
 /** Recent operator input activity reported by an interactive node. */
-export const NodePresenceActivityPayloadSchema = closedObject({
-  idleSeconds: Type.Integer({ minimum: 0, maximum: 2_592_000 }),
-  saturated: Type.Optional(Type.Boolean()),
-});
+export const NodePresenceActivityPayloadSchema = Type.Union([
+  closedObject({
+    idleSeconds: Type.Integer({ minimum: 0, maximum: 2_592_000 }),
+    saturated: Type.Optional(Type.Boolean()),
+  }),
+  closedObject({
+    action: Type.Literal("clear"),
+  }),
+]);
 
 /** Normalized result for node-originated events after gateway dispatch. */
 export const NodeEventResultSchema = closedObject({
@@ -124,6 +129,19 @@ export const NodeSkillsUpdateParamsSchema = closedObject({
 export type NodeSkillDescriptor = Static<typeof NodeSkillDescriptorSchema>;
 export type NodeSkillsUpdateParams = Static<typeof NodeSkillsUpdateParamsSchema>;
 
+export const NODE_INVOKE_SESSION_KEY_ENVELOPE_PROTOCOL_FEATURE =
+  "node-invoke-session-key-envelope-v1";
+const NodeProtocolFeatureSchema = Type.String({ minLength: 1, maxLength: 128 });
+
+/** Replaces transient protocol features supported by this node connection. */
+export const NodeProtocolFeaturesUpdateParamsSchema = closedObject({
+  features: Type.Array(NodeProtocolFeatureSchema, { maxItems: 32, uniqueItems: true }),
+});
+
+export type NodeProtocolFeaturesUpdateParams = Static<
+  typeof NodeProtocolFeaturesUpdateParamsSchema
+>;
+
 /** Acknowledges queued node work that the node has consumed. */
 export const NodePendingAckParamsSchema = closedObject({
   ids: Type.Array(NonEmptyString, { minItems: 1 }),
@@ -164,16 +182,13 @@ export const NodeInvokeResultParamsSchema = closedObject({
 });
 
 /** Ordered UTF-8 output emitted while a node command invocation is running. */
-export const NodeInvokeProgressParamsSchema = Type.Object(
-  {
-    invokeId: NonEmptyString,
-    nodeId: NonEmptyString,
-    seq: Type.Integer({ minimum: 0 }),
-    // Empty chunks are liveness heartbeats for captured stderr or capped stdout.
-    chunk: Type.String({ maxLength: 16 * 1024 }),
-  },
-  { additionalProperties: false },
-);
+export const NodeInvokeProgressParamsSchema = closedObject({
+  invokeId: NonEmptyString,
+  nodeId: NonEmptyString,
+  seq: Type.Integer({ minimum: 0 }),
+  // Empty chunks are liveness heartbeats for captured stderr or capped stdout.
+  chunk: Type.String({ maxLength: 16 * 1024 }),
+});
 
 /** Generic node event envelope accepted by the gateway. */
 export const NodeEventParamsSchema = closedObject({
@@ -188,7 +203,7 @@ export const NodePendingDrainParamsSchema = closedObject({
 });
 
 /** One queued node-work item returned by pending-work drain calls. */
-export const NodePendingDrainItemSchema = closedObject({
+const NodePendingDrainItemSchema = closedObject({
   id: NonEmptyString,
   type: NodePendingWorkTypeSchema,
   priority: Type.String({ enum: ["default", "normal", "high"] }),
@@ -230,6 +245,8 @@ export const NodeInvokeRequestEventSchema = closedObject({
   paramsJSON: Type.Optional(Type.String()),
   timeoutMs: Type.Optional(Type.Integer({ minimum: 0 })),
   idempotencyKey: Type.Optional(NonEmptyString),
+  // Presence marks Gateway-owned attribution; null means intentionally unattributed.
+  sessionKey: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
 });
 
 /** Ordered input frame sent by the gateway to one long-lived node invoke. */
